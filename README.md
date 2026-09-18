@@ -5,6 +5,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 ## Table of Contents
 1. [Kubernetes Basic Concepts (Nodes, Cluster, Master, Components)](#1-kubernetes-basic-concepts)
 2. [Docker vs containerd (Container Runtimes & CLI Tools)](#2-docker-vs-containerd)
+3. [Pods — Basic Concepts](#3-pods--basic-concepts)
 
 ---
 
@@ -121,5 +122,54 @@ Override with:
 - Modern clusters (containerd-based) → use `crictl` for troubleshooting/debugging on nodes, `nerdctl` if you need a general-purpose Docker-like CLI.
 
 > 📌 **Note: "Docker deprecation" ≠ Docker disappearing.** Only Docker-*as-Kubernetes-runtime* was deprecated (K8s no longer needs Docker's CLI/API/build tools since containerd handles the CRI side). Docker itself is still widely used for local dev/builds. Course examples may still use `docker` commands for teaching purposes — if you only have containerd, substitute `nerdctl` in place of `docker` in most cases.
+
+---
+
+## 3. Pods — Basic Concepts
+
+- Kubernetes does **not** deploy containers directly on worker nodes — containers are encapsulated inside a **Pod**.
+- A **Pod** = smallest deployable object in Kubernetes = (usually) a single instance of an application.
+
+### Pods & Scaling
+
+- Relationship between pods and containers is typically **1:1**.
+- To scale **up**: create **new pods** (not new containers inside an existing pod).
+- To scale **down**: delete existing pods.
+- If a node runs out of capacity, add a **new node** and schedule additional pods there.
+
+```mermaid
+flowchart TB
+    subgraph Node1[Node]
+        P1[Pod: App Container]
+        P2[Pod: App Container]
+    end
+    subgraph Node2[New Node - added when capacity runs out]
+        P3[Pod: App Container]
+    end
+```
+
+### Multi-Container Pods
+
+- A pod *can* contain multiple containers, but usually **not multiple copies of the same container** (that's what extra pods are for).
+- Valid use case: a **helper/sidecar container** supporting the main app (e.g. processing uploaded files, fetching data).
+
+Containers in the same pod share:
+| Shared resource | Detail |
+|---|---|
+| **Network namespace** | Can talk to each other via `localhost` |
+| **Storage/volumes** | Can share the same volume space |
+| **Lifecycle ("fate")** | Created together, destroyed together |
+
+- Kubernetes automates what you'd otherwise do manually with plain Docker: linking containers, custom networks, shared volumes, and monitoring/restarting dependent containers.
+- ⚠️ **Multi-container pods are a rare use case** — course (and most real-world basic setups) sticks to **single container per pod**.
+
+### Deploying & Inspecting Pods
+
+| Command | Purpose |
+|---|---|
+| `kubectl run <name> --image=<image>` | Creates a pod and deploys a container from the given image (pulled from Docker Hub by default, or a private repo if configured) |
+| `kubectl get pods` | Lists pods and their status (e.g. `ContainerCreating` → `Running`) |
+
+- At this stage (just a pod, no Service yet), the app is only accessible **internally from the node** — external access requires Services/networking (covered later).
 
 ---
