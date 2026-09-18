@@ -8,6 +8,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 3. [Pods — Basic Concepts](#3-pods--basic-concepts)
 4. [Pods — YAML Definition Files](#4-pods--yaml-definition-files)
 5. [Replication Controllers & ReplicaSets](#5-replication-controllers--replicasets)
+6. [Deployments](#6-deployments)
 
 ---
 
@@ -349,5 +350,72 @@ The only structural differences are: **`apiVersion`**, **`kind`**, and the **man
 | `kubectl scale --replicas=6 replicaset <name>` | Scale via CLI using type/name (doesn't update the YAML file) |
 
 > 📌 Scaling via `kubectl scale` does **not** update the replica count inside the definition file — the file and live cluster state can drift out of sync.
+
+---
+
+## 6. Deployments
+
+### Kubernetes Object Hierarchy
+
+```mermaid
+flowchart TB
+    D[Deployment] --> RS[ReplicaSet]
+    RS --> P1[Pod]
+    RS --> P2[Pod]
+    RS --> P3[Pod]
+```
+
+- **Pod** → single instance of an application.
+- **ReplicaSet** → ensures N pods are running.
+- **Deployment** → sits above ReplicaSet; provides production-grade capabilities:
+  - **Rolling updates** — upgrade instances one at a time (not all at once), avoiding user impact.
+  - **Rollback** — undo a problematic update.
+  - **Pause & Resume** — batch multiple changes (e.g. image upgrade + scaling + resource limits) and apply them together as one rollout instead of one-by-one.
+
+### Definition File
+
+Nearly identical to a ReplicaSet definition — only `kind` differs:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp-deployment
+  labels:
+    app: myapp
+    type: front-end
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      type: front-end
+  template:
+    metadata:
+      labels:
+        app: myapp
+        type: front-end
+    spec:
+      containers:
+        - name: nginx-container
+          image: nginx
+```
+
+### What Happens on Creation
+`kubectl create -f deployment-definition.yaml` →
+1. Creates a **Deployment**
+2. Which automatically creates a **ReplicaSet** (named after the deployment)
+3. Which automatically creates **Pods** (named after the deployment + replica set)
+
+### Commands
+
+| Command | Purpose |
+|---|---|
+| `kubectl create -f deployment-definition.yaml` | Create a deployment |
+| `kubectl get deployments` | List deployments |
+| `kubectl get replicaset` | See the auto-created ReplicaSet |
+| `kubectl get pods` | See the auto-created Pods |
+| `kubectl get all` | See all created objects (Deployment → ReplicaSet → Pods) at once |
+
+> At this stage, Deployment behaves just like a ReplicaSet — the real value (rolling updates, rollback, pause/resume) is covered in upcoming lectures.
 
 ---
