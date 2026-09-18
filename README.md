@@ -200,7 +200,6 @@ metadata:
   name: myapp-pod
   labels:
     app: myapp
-    type: front-end
 spec:
   containers:
     - name: nginx-container
@@ -217,5 +216,23 @@ spec:
 | `kubectl create -f pod-definition.yaml` | Create object(s) from a YAML file |
 | `kubectl get pods` | List pods |
 | `kubectl describe pod <name>` | Detailed info: creation time, labels, containers, associated events |
+| `kubectl delete pod <name>` | Remove a pod |
+| `kubectl delete deployment <name>` | Remove a deployment (e.g. cleanup before creating a fresh pod) |
+
+### ✏️ Editing Existing Pods (exam tip)
+
+- **If given a pod definition file**: edit the file, delete the old pod, recreate it (`kubectl delete pod <name>` → `kubectl create -f <file>`).
+- **If not given a file**, extract it first:
+  ```bash
+  kubectl get pod <pod-name> -o yaml > pod-definition.yaml
+  ```
+  Then edit → delete → recreate.
+- **`kubectl edit pod <pod-name>`** opens the live definition in an editor and applies changes directly — but **only these fields are editable in-place**:
+  - `spec.containers[*].image`
+  - `spec.initContainers[*].image`
+  - `spec.activeDeadlineSeconds`
+  - `spec.tolerations`
+  - `spec.terminationGracePeriodSeconds`
+- Anything else (e.g. changing the container's `name`, adding a container, changing ports) → **must delete & recreate** the pod, since pods are largely immutable.
 
 ---
