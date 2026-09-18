@@ -7,6 +7,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 2. [Docker vs containerd (Container Runtimes & CLI Tools)](#2-docker-vs-containerd)
 3. [Pods — Basic Concepts](#3-pods--basic-concepts)
 4. [Pods — YAML Definition Files](#4-pods--yaml-definition-files)
+5. [Replication Controllers & ReplicaSets](#5-replication-controllers--replicasets)
 
 ---
 
@@ -199,6 +200,7 @@ kind: Pod
 metadata:
   name: myapp-pod
   labels:
+    type: front-end
     app: myapp
 spec:
   containers:
@@ -216,8 +218,9 @@ spec:
 | `kubectl create -f pod-definition.yaml` | Create object(s) from a YAML file |
 | `kubectl get pods` | List pods |
 | `kubectl describe pod <name>` | Detailed info: creation time, labels, containers, associated events |
-| `kubectl delete pod <name>` | Remove a pod |
 | `kubectl delete deployment <name>` | Remove a deployment (e.g. cleanup before creating a fresh pod) |
+
+> 💡 **Editor tip**: An IDE with YAML support (e.g. PyCharm, VS Code) shows the document as a tree structure, which helps confirm indentation/hierarchy is correct — useful for catching sibling vs. child mistakes (e.g. `name`/`labels` both under `metadata`). Multiple items under `containers:` show as "item 1 of N", "item 2 of N", confirming it's parsed as a list.
 
 ### ✏️ Editing Existing Pods (exam tip)
 
@@ -234,5 +237,117 @@ spec:
   - `spec.tolerations`
   - `spec.terminationGracePeriodSeconds`
 - Anything else (e.g. changing the container's `name`, adding a container, changing ports) → **must delete & recreate** the pod, since pods are largely immutable.
+
+---
+
+## 5. Replication Controllers & ReplicaSets
+
+### Why replication?
+- **High availability**: if a pod crashes, a replacement is automatically created.
+- **Load sharing**: multiple pods share user load; can scale across multiple nodes.
+- Works even for a **single desired replica** — it still auto-recreates a failed pod.
+
+### ReplicationController (RC) vs ReplicaSet (RS)
+
+| | ReplicationController | ReplicaSet |
+|---|---|---|
+| Status | Older, legacy | Newer, **recommended** |
+| `apiVersion` | `v1` | `apps/v1` |
+| `selector` required? | No (defaults to pod template's labels if omitted) | **Yes** — must be explicitly defined (`matchLabels`) |
+| Can manage pre-existing pods (not created by it) | Limited | Yes, via label selector matching |
+| Selector matching options | Basic | More powerful (supports `matchExpressions`, etc.) |
+
+> ⚠️ Using `v1` instead of `apps/v1` for a ReplicaSet gives: `no matches for kind "ReplicaSet"`.
+
+### Definition File Structure
+
+Both RC and RS nest a **pod template** inside `spec`. Structure = parent object wrapping a pod definition:
+
+#### ReplicationController example
+
+```yaml
+apiVersion: v1
+kind: ReplicationController
+metadata:
+  name: myapp-rc
+  labels:
+    app: myapp
+    type: front-end
+spec:
+  replicas: 3
+  template:
+    # All Pod's metadata and spec go here
+    metadata:
+      labels:
+        app: myapp
+        type: front-end
+    spec:
+      containers:
+        - name: nginx-container
+          image: nginx
+```
+
+#### ReplicaSet example
+
+```yaml
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: myapp-replicaset
+  labels:
+    app: myapp
+    type: front-end
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      type: front-end
+  template:
+    # All Pod's metadata and spec go here
+    metadata:
+      labels:
+        app: myapp
+        type: front-end
+    spec:
+      containers:
+        - name: nginx-container
+          image: nginx
+```
+
+### Side-by-side diff
+
+| | ReplicationController | ReplicaSet |
+|---|---|---|
+| `apiVersion` | `v1` | `apps/v1` |
+| `kind` | `ReplicationController` | `ReplicaSet` |
+| `spec.replicas` | ✅ | ✅ |
+| `spec.selector` | ❌ not required (defaults to matching `template.metadata.labels`) | ✅ **required**, written as `matchLabels` |
+| `spec.template` | ✅ | ✅ |
+
+The only structural differences are: **`apiVersion`**, **`kind`**, and the **mandatory `selector`** block in ReplicaSet. Everything else (`metadata`, `spec.replicas`, `spec.template`) is written identically.
+
+- `spec.template` = pod definition **minus** its own `apiVersion`/`kind` (those two lines are dropped; everything else nests under `template`).
+- `spec.replicas` and `spec.template` (and `spec.selector` for RS) are **siblings** — same indentation level under `spec`.
+- `selector.matchLabels` **must match** the labels in `template.metadata.labels` (and/or on any existing pods you want the RS to adopt).
+
+### Labels & Selectors — Why They Matter
+- ReplicaSet is a **monitoring process**: it watches for pods matching its selector and ensures the desired count is met.
+- It can **adopt pre-existing pods** that match the selector (won't create duplicates if enough already exist) — but the `template` is still required, since it's needed if a replacement pod must be created later.
+
+### Commands
+
+| Command | Purpose |
+|---|---|
+| `kubectl create -f rc-definition.yaml` | Create RC or RS from file |
+| `kubectl get replicationcontroller` | List RCs |
+| `kubectl get replicaset` (or `rs`) | List RSs |
+| `kubectl get pods` | Pods created show a name prefixed by the RC/RS name |
+| `kubectl delete replicaset <name>` | Delete RS (also deletes its pods) |
+| `kubectl replace -f <file>` | Replace/update object from file |
+| `kubectl apply -f <file>` | Apply updated definition file (e.g. after editing `replicas` count) |
+| `kubectl scale --replicas=6 -f <file>` | Scale via CLI using file reference |
+| `kubectl scale --replicas=6 replicaset <name>` | Scale via CLI using type/name (doesn't update the YAML file) |
+
+> 📌 Scaling via `kubectl scale` does **not** update the replica count inside the definition file — the file and live cluster state can drift out of sync.
 
 ---
