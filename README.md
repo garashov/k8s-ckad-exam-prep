@@ -9,6 +9,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 4. [Pods — YAML Definition Files](#4-pods--yaml-definition-files)
 5. [Replication Controllers & ReplicaSets](#5-replication-controllers--replicasets)
 6. [Deployments](#6-deployments)
+7. [Namespaces](#7-namespaces)
 
 ---
 
@@ -417,5 +418,92 @@ spec:
 | `kubectl get all` | See all created objects (Deployment → ReplicaSet → Pods) at once |
 
 > At this stage, Deployment behaves just like a ReplicaSet — the real value (rolling updates, rollback, pause/resume) is covered in upcoming lectures.
+
+---
+
+## 7. Namespaces
+
+**Analogy**: Two people named "Mark" in different houses (Smiths, Williams) go by first name *within* their house, but need the full name (Mark Smith) when referenced from outside or across houses. Houses = namespaces; each has its own rules and resources.
+
+### Default Namespaces (auto-created by Kubernetes)
+
+| Namespace | Purpose |
+|---|---|
+| `default` | Where your objects go if you don't specify a namespace |
+| `kube-system` | Internal Kubernetes pods/services (networking, DNS, etc.) — isolated to avoid accidental changes |
+| `kube-public` | Resources meant to be accessible to **all** users across all namespaces |
+
+### Why Use Namespaces
+- Isolate resources between environments (e.g. `dev` vs `prod`) on the **same cluster**.
+- Prevent accidental cross-environment changes.
+- Apply namespace-specific **policies** and **resource quotas** (limit CPU/memory/pod count per namespace).
+
+### Cross-Namespace Communication (DNS)
+
+- Within the **same** namespace: reference a service simply by its name → `db-service`
+- Across namespaces: `<service-name>.<namespace>.svc.cluster.local`
+  - e.g. `db-service.dev.svc.cluster.local`
+
+```mermaid
+flowchart LR
+    A["db-service<br/>(subdomain: svc)"] --> B[".dev<br/>(namespace)"]
+    B --> C[".svc.cluster.local<br/>(default cluster domain)"]
+```
+Breakdown: `<service>.<namespace>.svc.cluster.local` — `cluster.local` = default cluster domain, `svc` = subdomain for services.
+
+### Commands
+
+| Command | Purpose |
+|---|---|
+| `kubectl get pods` | Lists pods in `default` namespace only |
+| `kubectl get pods --namespace=kube-system` | List pods in a specific namespace |
+| `kubectl create -f pod-definition.yaml --namespace=dev` | Create a pod in a specific namespace (CLI override) |
+| `kubectl create namespace dev` | Create a namespace directly via CLI |
+| `kubectl get pods --all-namespaces` (or `-A`) | List pods across **all** namespaces |
+| `kubectl config set-context $(kubectl config current-context) --namespace=dev` | Permanently switch the **current context** to a namespace (no need to pass `--namespace` each time) |
+
+To permanently bind a pod to a namespace in its YAML (instead of passing `--namespace` every time):
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp-pod
+  namespace: dev
+  labels:
+    app: myapp
+spec:
+  containers:
+    - name: nginx-container
+      image: nginx
+```
+
+### Creating a Namespace via Definition File
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dev
+```
+`kubectl create -f namespace-dev.yaml`
+
+### Resource Quotas (limit usage per namespace)
+
+```yaml
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: compute-quota
+  namespace: dev
+spec:
+  hard:
+    pods: "10"
+    requests.cpu: "4"
+    requests.memory: 5Gi
+    limits.cpu: "10"
+    limits.memory: 10Gi
+```
+
+> 📌 Contexts (used to manage multiple clusters/environments from one `kubectl` setup) are a related but separate topic — covered elsewhere.
 
 ---
