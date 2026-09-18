@@ -6,6 +6,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 1. [Kubernetes Basic Concepts (Nodes, Cluster, Master, Components)](#1-kubernetes-basic-concepts)
 2. [Docker vs containerd (Container Runtimes & CLI Tools)](#2-docker-vs-containerd)
 3. [Pods — Basic Concepts](#3-pods--basic-concepts)
+4. [Pods — YAML Definition Files](#4-pods--yaml-definition-files)
 
 ---
 
@@ -171,5 +172,50 @@ Containers in the same pod share:
 | `kubectl get pods` | Lists pods and their status (e.g. `ContainerCreating` → `Running`) |
 
 - At this stage (just a pod, no Service yet), the app is only accessible **internally from the node** — external access requires Services/networking (covered later).
+
+---
+
+## 4. Pods — YAML Definition Files
+
+Every Kubernetes definition file has **4 required top-level fields**:
+
+| Field | Type | Purpose |
+|---|---|---|
+| `apiVersion` | string | API version used to create the object (e.g. `v1` for pods; others: `apps/v1`, `extensions/v1beta1`) |
+| `kind` | string | Type of object (`Pod`, `ReplicaSet`, `Deployment`, `Service`, ...) |
+| `metadata` | dictionary | Data *about* the object: `name`, `labels` (only fields Kubernetes expects — can't add arbitrary keys here) |
+| `spec` | dictionary | Object-specific configuration (structure differs per `kind` — check docs) |
+
+### YAML Structure Rules (as applied to K8s)
+- `metadata.name` → string; `metadata.labels` → a nested dictionary of **arbitrary** key-value pairs (unlike `metadata` itself).
+- Siblings (e.g. `name` and `labels`) must have **equal indentation**, and **more indentation than their parent** (`metadata`).
+- Labels are useful for grouping/filtering objects later (e.g. `app: front-end`, `app: back-end`, `app: database`) once you have many pods.
+
+### Pod Spec Example
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp-pod
+  labels:
+    app: myapp
+    type: front-end
+spec:
+  containers:
+    - name: nginx-container
+      image: nginx
+```
+
+- `spec.containers` is a **list** (pods can hold multiple containers) — each `-` denotes a list item.
+- Each list item is a dictionary with (at least) `name` and `image`.
+
+### Commands
+
+| Command | Purpose |
+|---|---|
+| `kubectl create -f pod-definition.yaml` | Create object(s) from a YAML file |
+| `kubectl get pods` | List pods |
+| `kubectl describe pod <name>` | Detailed info: creation time, labels, containers, associated events |
 
 ---
