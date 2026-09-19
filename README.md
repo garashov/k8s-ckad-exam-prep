@@ -11,6 +11,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 6. [Deployments](#6-deployments)
 7. [Namespaces](#7-namespaces)
 8. [Services — NodePort](#8-services--nodeport)
+9. [Services — ClusterIP](#9-services--clusterip)
 
 ---
 
@@ -577,5 +578,62 @@ spec:
 - **Multiple pods, same node**: if several pods share the label matched by the selector, the Service automatically load-balances across all of them using a **random algorithm** (built-in load balancing).
 - **Multiple pods across multiple nodes**: Kubernetes automatically maps the **same nodePort** on **every node** in the cluster — so the app is reachable via *any* node's IP + that port, regardless of which node actually hosts the pod.
 - Service endpoints update automatically as pods are added/removed (no manual reconfiguration needed).
+
+---
+
+## 9. Services — ClusterIP
+
+### The Problem
+A full-stack app typically has multiple tiers: front-end, back-end, cache (Redis), database (MySQL). These tiers need to talk to each other, but:
+- Pod IPs are **ephemeral** — pods die/restart, IPs change constantly.
+- With multiple pods per tier, **which one** should another pod connect to, and who decides?
+
+### The Solution: ClusterIP
+A **ClusterIP** service groups a set of pods (e.g. all backend pods) and exposes **one stable internal IP + DNS name** as the single access point. Requests to the service are forwarded to one of the grouped pods (**randomly**).
+
+```mermaid
+flowchart LR
+    FE1[Front-end Pod] --> SVC1[backend service<br/>ClusterIP]
+    SVC1 --> BE1[Backend Pod 1]
+    SVC1 --> BE2[Backend Pod 2]
+    SVC1 --> BE3[Backend Pod 3]
+    BE1 --> SVC2[redis service<br/>ClusterIP]
+    BE2 --> SVC2
+    SVC2 --> R1[Redis Pod 1]
+    SVC2 --> R2[Redis Pod 2]
+```
+
+- Enables clean microservices architecture: each tier can scale, move, or be replaced without breaking communication — other pods only ever talk to the **service name**, never pod IPs directly.
+- **ClusterIP is the default service type** — if `type` is omitted, it defaults to ClusterIP.
+
+### Definition File
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: back-end
+spec:
+  type: ClusterIP     # default type, can be omitted
+  ports:
+    - targetPort: 80
+      port: 80
+  selector:
+    # Put metadata.labels of Pod here
+    app: myapp
+    type: back-end
+```
+
+- `targetPort` = port the backend pods expose; `port` = port on the service itself.
+- `selector` links the service to pods, same pattern as NodePort — copy the labels from the target pod definition.
+
+### Commands
+
+| Command | Purpose |
+|---|---|
+| `kubectl create -f service-definition.yaml` | Create the service |
+| `kubectl get services` (or `svc`) | Check status, ClusterIP, ports |
+
+- Other pods reach it via the **service name** (DNS) or its **ClusterIP** — never via individual pod IPs.
 
 ---
