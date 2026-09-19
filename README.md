@@ -10,6 +10,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 5. [Replication Controllers & ReplicaSets](#5-replication-controllers--replicasets)
 6. [Deployments](#6-deployments)
 7. [Namespaces](#7-namespaces)
+8. [Services — NodePort](#8-services--nodeport)
 
 ---
 
@@ -505,5 +506,76 @@ spec:
 ```
 
 > 📌 Contexts (used to manage multiple clusters/environments from one `kubectl` setup) are a related but separate topic — covered elsewhere.
+
+---
+
+## 8. Services — NodePort
+
+### Purpose
+A **Service** enables communication between pods, and between pods and the outside world (loose coupling between microservices). It's a Kubernetes object like Pods/ReplicaSets/Deployments.
+
+### The Networking Problem
+- Each **node** has its own IP (e.g. `192.168.1.2`), on the same network as your laptop.
+- Each **pod** has an IP in a separate internal pod network (e.g. `10.244.0.2`) — **not directly reachable** from outside the cluster/node.
+- SSH-ing into the node and curling the pod IP works, but isn't practical for external users.
+- **Solution**: a **Service** sits in the middle and forwards traffic from an externally-reachable node port → to the pod.
+
+### Service Types
+
+| Type | Behavior |
+|---|---|
+| **NodePort** | Exposes the service on a static port on every node's IP; external traffic → node port → service → pod |
+| **ClusterIP** | Creates a virtual internal IP for service-to-service communication (e.g. front-end → back-end) — default type |
+| **LoadBalancer** | Provisions an external load balancer (on supported cloud providers) — e.g. to distribute traffic across front-end web servers |
+
+### NodePort — Three Ports Involved
+
+```mermaid
+flowchart LR
+    U[External User] -->|NodePort<br/>30000-32767| S[Service<br/>ClusterIP + port]
+    S -->|targetPort| P[Pod<br/>e.g. port 80]
+```
+
+| Port | Meaning | Constraint |
+|---|---|---|
+| `targetPort` | Port the app/container listens on inside the pod | Defaults to `port` if omitted |
+| `port` | Port on the Service itself (its virtual IP) | **Only mandatory field** |
+| `nodePort` | Port exposed on the node's IP for external access | Valid range: **30000–32767**; auto-assigned from that range if omitted |
+
+### Definition File
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp-service
+spec:
+  type: NodePort
+  ports:
+    - targetPort: 80
+      port: 80
+      nodePort: 30008    # Range 30000-32767
+  selector:
+    # Put metadata.labels of Pod here
+    app: myapp
+    type: front-end
+```
+
+- `spec.ports` is a **list** (a service can expose multiple port mappings).
+- `spec.selector` links the service to pod(s) — must **match the labels** on the target pod(s) (same labels/selector mechanism as ReplicaSets/Deployments). Without this, the Service has no way to know which pods to forward to.
+
+### Commands
+
+| Command | Purpose |
+|---|---|
+| `kubectl create -f service-definition.yaml` | Create the service |
+| `kubectl get services` (or `svc`) | List services, their ClusterIP, and mapped ports |
+| `curl http://<node-ip>:<nodePort>` | Access the app externally |
+
+### Multi-Pod & Multi-Node Behavior (automatic — no extra config needed)
+
+- **Multiple pods, same node**: if several pods share the label matched by the selector, the Service automatically load-balances across all of them using a **random algorithm** (built-in load balancing).
+- **Multiple pods across multiple nodes**: Kubernetes automatically maps the **same nodePort** on **every node** in the cluster — so the app is reachable via *any* node's IP + that port, regardless of which node actually hosts the pod.
+- Service endpoints update automatically as pods are added/removed (no manual reconfiguration needed).
 
 ---
