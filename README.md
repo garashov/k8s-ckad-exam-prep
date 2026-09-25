@@ -12,6 +12,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 7. [Namespaces](#7-namespaces)
 8. [Services — NodePort](#8-services--nodeport)
 9. [Services — ClusterIP](#9-services--clusterip)
+10. [Imperative Commands (Exam Tip)](#10-imperative-commands-exam-tip)
 
 ---
 
@@ -210,10 +211,13 @@ spec:
   containers:
     - name: nginx-container
       image: nginx
+      ports:
+        - containerPort: 8080
 ```
 
 - `spec.containers` is a **list** (pods can hold multiple containers) — each `-` denotes a list item.
 - Each list item is a dictionary with (at least) `name` and `image`.
+- `ports` (optional) declares the port(s) the container listens on — informational/documentation purposes; it doesn't by itself expose the port outside the pod (that's what a Service is for).
 
 ### Commands
 
@@ -640,5 +644,88 @@ spec:
 | `kubectl get services` (or `svc`) | Check status, ClusterIP, ports |
 
 - Other pods reach it via the **service name** (DNS) or its **ClusterIP** — never via individual pod IPs.
+
+---
+
+## 10. Imperative Commands (Exam Tip) ⭐
+
+Declarative (YAML files) is the standard approach, but **imperative commands save major time** on the exam — both for quick one-off tasks and for generating a YAML template to then edit.
+
+### Key Flags
+
+| Flag | Purpose |
+|---|---|
+| `--dry-run=client` | Doesn't actually create the resource — just validates the command |
+| `-o yaml` | Outputs the resource definition as YAML instead of creating it |
+| Combined + `>` redirect | Generates a YAML file to edit, instead of writing one from scratch |
+
+```bash
+kubectl run nginx --image=nginx --dry-run=client -o yaml > nginx-pod.yaml
+```
+
+### Pod
+
+| Task | Command |
+|---|---|
+| Create an nginx pod | `kubectl run nginx --image=nginx` |
+| Generate pod YAML only (no creation) | `kubectl run nginx --image=nginx --dry-run=client -o yaml` |
+
+### Deployment
+
+| Task | Command |
+|---|---|
+| Create a deployment | `kubectl create deployment nginx --image=nginx` |
+| Generate deployment YAML only | `kubectl create deployment nginx --image=nginx --dry-run=client -o yaml` |
+| Create with 4 replicas directly | `kubectl create deployment nginx --image=nginx --replicas=4` |
+| Scale an existing deployment | `kubectl scale deployment nginx --replicas=4` |
+| Generate YAML to file, then edit before creating | `kubectl create deployment nginx --image=nginx --dry-run=client -o yaml > nginx-deployment.yaml` |
+
+### Service
+
+**ClusterIP** — expose pod `redis` on port 6379 as `redis-service`:
+```bash
+kubectl expose pod redis --port=6379 --name redis-service --dry-run=client -o yaml
+```
+- ✅ Automatically uses the **pod's actual labels** as selectors.
+
+Alternative:
+```bash
+kubectl create service clusterip redis --tcp=6379:6379 --dry-run=client -o yaml
+```
+- ⚠️ Does **not** use the pod's labels — assumes selector `app=redis` and you **cannot pass in custom selectors** via CLI. Only safe if your pod's label happens to match; otherwise generate the file and edit the selector manually.
+
+**NodePort** — expose pod `nginx` port 80 as `nginx-service`, nodePort 30080:
+```bash
+kubectl expose pod nginx --port=80 --name nginx-service --type=NodePort --dry-run=client -o yaml
+```
+- ✅ Uses pod's labels as selectors, but ⚠️ **cannot specify the nodePort** via this command — must generate the file and manually add `nodePort: 30080` before creating.
+
+Alternative:
+```bash
+kubectl create service nodeport nginx --tcp=80:80 --node-port=30080 --dry-run=client -o yaml
+```
+- ✅ Can specify nodePort, but ⚠️ does **not** use the pod's labels as selectors.
+
+> 💡 **Recommendation**: prefer `kubectl expose` (keeps correct selectors). If you need a specific `nodePort`, generate the YAML with `expose` + `--dry-run=client -o yaml`, then manually add the `nodePort` field before applying.
+
+### Output Formatting (`-o`)
+
+```
+kubectl [command] [TYPE] [NAME] -o <output_format>
+```
+
+| Format | Result |
+|---|---|
+| `-o json` | Full resource as JSON |
+| `-o yaml` | Full resource as YAML |
+| `-o name` | Just the resource name |
+| `-o wide` | Plain-text table + extra columns (e.g. IP, Node) |
+
+```bash
+kubectl get pods -o wide
+# NAME      READY   STATUS    RESTARTS   AGE     IP          NODE     ...
+```
+
+> Combine with `--dry-run=client` to preview a resource's YAML/JSON without creating it (see examples above).
 
 ---
