@@ -14,6 +14,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 9. [Services — ClusterIP](#9-services--clusterip)
 10. [Imperative Commands (Exam Tip)](#10-imperative-commands-exam-tip)
 11. [kubectl explain & api-resources](#11-kubectl-explain--api-resources)
+12. [Docker Images & Dockerfile](#12-docker-images--dockerfile)
 
 ---
 
@@ -743,5 +744,64 @@ Useful for exploring resources and fields **without leaving the terminal / docs*
 | `kubectl explain pod --recursive` | Outputs the **entire nested field structure** at once — the fastest way to see everything available for a YAML file |
 
 > 💡 Use `api-resources` to find the resource name → `explain <resource> --recursive` to see the full field tree → build your YAML confidently without needing the docs website.
+
+---
+
+## 12. Docker Images & Dockerfile
+
+### Why Build Your Own Image
+- No suitable image exists on Docker Hub for what you need, or
+- You want to Dockerize your own application for easier shipping/deployment.
+
+### Workflow
+
+```mermaid
+flowchart LR
+    A[Write Dockerfile] --> B["docker build -t &lt;tag&gt; ."]
+    B --> C[Image created locally]
+    C --> D["docker push &lt;account&gt;/&lt;image&gt;"]
+    D --> E[Image on Docker Hub]
+```
+
+### Dockerfile Format
+Instruction (CAPS) + argument, one per line:
+
+```dockerfile
+FROM Ubuntu
+
+RUN apt-get update
+RUN apt-get install python
+
+RUN pip install flask
+RUN pip install flask-mysql
+
+COPY . /opt/source-code
+
+ENTRYPOINT FLASK_APP=/opt/source-code/app.py flask run
+```
+
+| Instruction | Purpose |
+|---|---|
+| `FROM` | **Required as the first line** — defines the base image/OS (every image must be based on another image, ultimately an OS) |
+| `RUN` | Executes a command while building the image (e.g. install packages) |
+| `COPY` | Copies files from local system into the image |
+| `ENTRYPOINT` | Command executed when a container is run from this image |
+
+### Layered Architecture
+- Each instruction/line creates a **new layer**, storing only the **diff** from the previous layer.
+- Layers are **cached** by Docker:
+  - If a build step fails, fixing it and rebuilding **reuses cached layers** up to that point instead of starting over.
+  - If you add new instructions, only layers **from that point onward** need rebuilding — faster iteration, especially when just updating app source code (put frequently-changing steps, like `COPY` of source code, later in the file).
+- `docker history <image>` shows each layer and its size contribution.
+
+### Commands
+
+| Command | Purpose |
+|---|---|
+| `docker build -t <account>/<image-name> .` | Build image from Dockerfile in current directory |
+| `docker push <account>/<image-name>` | Publish image to Docker Hub |
+| `docker history <image-name>` | Show layers and their sizes |
+
+> 📌 Almost anything can be containerized — not just servers/databases, but dev tools, browsers, utilities, even desktop apps.
 
 ---
