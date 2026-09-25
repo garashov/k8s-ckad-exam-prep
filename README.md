@@ -16,6 +16,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 11. [kubectl explain & api-resources](#11-kubectl-explain--api-resources)
 12. [Docker Images & Dockerfile](#12-docker-images--dockerfile)
 13. [Docker Commands, Arguments & Entrypoint](#13-docker-commands-arguments--entrypoint)
+14. [Pod Commands & Arguments](#14-pod-commands--arguments)
 
 ---
 
@@ -858,5 +859,45 @@ CMD ["5"]
 | One-off override of `CMD` | Append a command to `docker run <image> <new-command>` |
 | Permanently change default command | Build a new image with a modified `CMD`/`ENTRYPOINT` |
 | Override `ENTRYPOINT` itself at runtime | `docker run --entrypoint <new-entrypoint> <image> <args>` |
+
+---
+
+## 14. Pod Commands & Arguments
+
+Maps directly onto the Dockerfile `CMD` / `ENTRYPOINT` concepts from Section 13.
+
+| Pod field | Overrides Dockerfile instruction | Behavior |
+|---|---|---|
+| `spec.containers[].args` | `CMD` | Appends/replaces the default arguments |
+| `spec.containers[].command` | `ENTRYPOINT` | Replaces the executable itself |
+
+> ⚠️ **Common trap**: `command` overrides `ENTRYPOINT`, **not** `CMD`. Naming is misleading — remember the mapping, not the words.
+
+### Example
+
+Dockerfile (`ubuntu-sleeper` image):
+```dockerfile
+FROM ubuntu
+ENTRYPOINT ["sleep"]
+CMD ["5"]
+```
+
+Pod definition overriding both:
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ubuntu-sleeper-pod
+spec:
+  containers:
+    - name: ubuntu-sleeper
+      image: ubuntu-sleeper
+      command: ["sleep2.0"]   # overrides ENTRYPOINT
+      args: ["10"]            # overrides CMD
+```
+Resulting startup command: `sleep2.0 10`
+
+- To just change the sleep duration (override `CMD` only): set `args: ["10"]`, omit `command`.
+- To change the executable itself (override `ENTRYPOINT`): set `command: [...]`.
 
 ---
