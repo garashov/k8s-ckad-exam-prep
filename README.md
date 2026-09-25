@@ -18,6 +18,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 13. [Docker Commands, Arguments & Entrypoint](#13-docker-commands-arguments--entrypoint)
 14. [Pod Commands & Arguments](#14-pod-commands--arguments)
 15. [Environment Variables in Pods](#15-environment-variables-in-pods)
+16. [ConfigMaps](#16-configmaps)
 
 ---
 
@@ -942,6 +943,112 @@ Instead of a literal `value`, use `valueFrom` to pull from:
 - **ConfigMap** — for regular configuration data
 - **Secret** — for sensitive data (passwords, tokens, etc.)
 
-(Covered in detail in upcoming ConfigMap/Secret sections.)
+(Covered in detail in the next sections.)
+
+---
+
+## 16. ConfigMaps
+
+### Why
+Managing env vars inside every Pod definition file gets unwieldy at scale. **ConfigMaps** centralize configuration data (key-value pairs) so it can be managed independently and injected into pods.
+
+### Two-Step Process
+1. **Create** the ConfigMap.
+2. **Inject** it into a pod (as env vars, single value, or volume/files).
+
+### Creating a ConfigMap — Imperative
+
+```bash
+# Inline key-value pairs
+kubectl create configmap app-config --from-literal=APP_COLOR=blue --from-literal=APP_MODE=prod
+
+# From a file (data stored under the file's name)
+kubectl create configmap app-config --from-file=app_config.properties
+```
+- Use `--from-literal` multiple times for multiple pairs (gets unwieldy for many values).
+
+### Creating a ConfigMap — Declarative
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  APP_COLOR: blue
+  APP_MODE: prod
+```
+`kubectl create -f config-map.yaml`
+
+> 📌 ConfigMap definitions have `data` instead of `spec` as the fourth top-level field.
+> 💡 Name ConfigMaps meaningfully (e.g. one per app/component: `app-config`, `mysql-config`, `redis-config`) — you'll reference these names when wiring them to pods.
+
+### Commands
+
+| Command | Purpose |
+|---|---|
+| `kubectl get configmaps` | List ConfigMaps |
+| `kubectl describe configmap <name>` | View ConfigMap details, including its data |
+
+### Injecting a ConfigMap into a Pod (as env vars)
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp-pod
+spec:
+  containers:
+    - name: myapp-container
+      image: myapp
+      envFrom:
+        - configMapRef:
+            name: app-config
+```
+- `envFrom` is a **list** — you can reference multiple ConfigMaps.
+- Every key in the ConfigMap becomes an environment variable in the container.
+
+### Other Injection Methods
+
+**Single environment variable from a specific ConfigMap key:**
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp-pod
+spec:
+  containers:
+    - name: myapp-container
+      image: myapp
+      env:
+        - name: APP_COLOR
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: APP_COLOR
+```
+- `env` (not `envFrom`) is used here, since we're pulling **one specific key** rather than the whole ConfigMap.
+- `valueFrom.configMapKeyRef.name` = the ConfigMap name; `.key` = the specific key to pull.
+
+**As files in a mounted volume:**
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp-pod
+spec:
+  containers:
+    - name: myapp-container
+      image: myapp
+      volumeMounts:
+        - name: app-config-volume
+          mountPath: /opt/app-config
+  volumes:
+    - name: app-config-volume
+      configMap:
+        name: app-config
+```
+- Each key in the ConfigMap becomes a **file** inside the mounted directory (`/opt/app-config`), with the key's value as the file's contents.
+- Useful when an app expects configuration as files rather than env vars.
 
 ---
