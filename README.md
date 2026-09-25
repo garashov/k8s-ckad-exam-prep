@@ -13,6 +13,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 8. [Services — NodePort](#8-services--nodeport)
 9. [Services — ClusterIP](#9-services--clusterip)
 10. [Imperative Commands (Exam Tip)](#10-imperative-commands-exam-tip)
+11. [kubectl explain & api-resources](#11-kubectl-explain--api-resources)
 
 ---
 
@@ -727,5 +728,20 @@ kubectl get pods -o wide
 ```
 
 > Combine with `--dry-run=client` to preview a resource's YAML/JSON without creating it (see examples above).
+
+---
+
+## 11. kubectl explain & api-resources ⭐
+
+Useful for exploring resources and fields **without leaving the terminal / docs**.
+
+| Command | Purpose |
+|---|---|
+| `kubectl api-resources` | List **all** resource types: their name, short name, API group/version, whether namespaced. Great when you forget a resource's exact name, short name, or correct casing |
+| `kubectl explain pod` | Shows **top-level** fields of a resource (`apiVersion`, `kind`, `metadata`, `spec`, `status`) with type + description |
+| `kubectl explain pod.spec` | Drills into a specific field's **subfields** (still only one level deep at a time) |
+| `kubectl explain pod --recursive` | Outputs the **entire nested field structure** at once — the fastest way to see everything available for a YAML file |
+
+> 💡 Use `api-resources` to find the resource name → `explain <resource> --recursive` to see the full field tree → build your YAML confidently without needing the docs website.
 
 ---
