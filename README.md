@@ -15,6 +15,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 10. [Imperative Commands (Exam Tip)](#10-imperative-commands-exam-tip)
 11. [kubectl explain & api-resources](#11-kubectl-explain--api-resources)
 12. [Docker Images & Dockerfile](#12-docker-images--dockerfile)
+13. [Docker Commands, Arguments & Entrypoint](#13-docker-commands-arguments--entrypoint)
 
 ---
 
@@ -803,5 +804,59 @@ ENTRYPOINT FLASK_APP=/opt/source-code/app.py flask run
 | `docker history <image-name>` | Show layers and their sizes |
 
 > 📌 Almost anything can be containerized — not just servers/databases, but dev tools, browsers, utilities, even desktop apps.
+
+---
+
+## 13. Docker Commands, Arguments & Entrypoint
+
+> Not strictly in the CKAD curriculum, but foundational for understanding Pod `command`/`args` (next section).
+
+### Why Containers Exit
+- Containers are **not** VMs — they don't host a full OS, they run **one process/task**.
+- A container's lifetime = its main process's lifetime. When that process ends (or crashes), the container exits.
+- `docker run ubuntu` exits almost immediately because the Ubuntu image's default command is `bash` — a shell that needs a terminal; with no terminal attached, it exits instantly → container exits too.
+
+### CMD vs ENTRYPOINT
+
+| Instruction | Role | Behavior when you pass args to `docker run` |
+|---|---|---|
+| `CMD` | Default command **and/or default args** | Fully **replaced** by whatever you pass on the command line |
+| `ENTRYPOINT` | The fixed **executable** to run | Whatever you pass gets **appended** to it |
+
+```dockerfile
+# CMD only
+FROM ubuntu
+CMD ["sleep", "5"]
+```
+`docker run ubuntu-sleeper 10` → runs `sleep 10` (CMD fully overridden)
+
+```dockerfile
+# ENTRYPOINT only
+FROM ubuntu
+ENTRYPOINT ["sleep"]
+```
+`docker run ubuntu-sleeper 10` → runs `sleep 10` (10 appended to entrypoint)
+`docker run ubuntu-sleeper` (no args) → runs just `sleep` → **error: operand missing**
+
+```dockerfile
+# ENTRYPOINT + CMD combined (best of both — default value with override capability)
+FROM ubuntu
+ENTRYPOINT ["sleep"]
+CMD ["5"]
+```
+- No args passed → `CMD` value used as default arg → `sleep 5`
+- Args passed (`docker run ubuntu-sleeper 10`) → overrides `CMD`, appended to `ENTRYPOINT` → `sleep 10`
+
+> ⚠️ Both `ENTRYPOINT` and `CMD` should be written in **JSON array format**, with the executable as the **first element**, for this combination to work correctly:
+> ✅ `["sleep", "5"]` — correct
+> ❌ `["sleep 5"]` — wrong (command+params as one string)
+
+### Runtime Overrides
+
+| Goal | How |
+|---|---|
+| One-off override of `CMD` | Append a command to `docker run <image> <new-command>` |
+| Permanently change default command | Build a new image with a modified `CMD`/`ENTRYPOINT` |
+| Override `ENTRYPOINT` itself at runtime | `docker run --entrypoint <new-entrypoint> <image> <args>` |
 
 ---
