@@ -251,6 +251,20 @@ spec:
   - `spec.terminationGracePeriodSeconds`
 - Anything else (e.g. changing the container's `name`, adding a container, changing ports) → **must delete & recreate** the pod, since pods are largely immutable.
 
+**What actually happens if you try to `kubectl edit` a non-editable field:**
+1. `kubectl edit pod <name>` opens the spec in vi.
+2. You edit a non-editable field (e.g. env vars, resources, service account) and save → **save is denied**.
+3. Kubernetes still writes your edited version to a **temporary file** (e.g. `/tmp/kubectl-edit-ccvrq.yaml`) — the path is shown in the error message.
+4. Delete the running pod: `kubectl delete pod <name>`
+5. Create a new one from that temp file: `kubectl create -f /tmp/kubectl-edit-ccvrq.yaml`
+
+> Both this "edit → denied → use temp file" flow and the manual "get -o yaml → edit → delete → recreate" flow achieve the same result — use whichever's more convenient.
+
+### ✏️ Editing Deployments (much easier!)
+- A **Deployment** owns a pod *template*, so editing **any** field of the pod spec is allowed.
+- `kubectl edit deployment <name>` — the Deployment controller automatically deletes the old pod(s) and creates new ones matching the updated template.
+- No manual delete/recreate dance needed — this is one advantage of managing pods via Deployments rather than bare pods.
+
 ---
 
 ## 5. Replication Controllers & ReplicaSets
