@@ -17,6 +17,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 12. [Docker Images & Dockerfile](#12-docker-images--dockerfile)
 13. [Docker Commands, Arguments & Entrypoint](#13-docker-commands-arguments--entrypoint)
 14. [Pod Commands & Arguments](#14-pod-commands--arguments)
+15. [Environment Variables in Pods](#15-environment-variables-in-pods)
 
 ---
 
@@ -913,5 +914,34 @@ Resulting startup command: `sleep2.0 10`
 
 - To just change the sleep duration (override `CMD` only): set `args: ["10"]`, omit `command`.
 - To change the executable itself (override `ENTRYPOINT`): set `command: [...]`.
+
+---
+
+## 15. Environment Variables in Pods
+
+Set via the `env` property under a container spec:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp-pod
+spec:
+  containers:
+    - name: myapp-container
+      image: myapp
+      env:
+        - name: APP_COLOR
+          value: pink
+```
+
+- `env` is a **list** — each item (`-`) is a dict with `name` and `value`.
+
+### Other Ways to Set Env Vars (preview)
+Instead of a literal `value`, use `valueFrom` to pull from:
+- **ConfigMap** — for regular configuration data
+- **Secret** — for sensitive data (passwords, tokens, etc.)
+
+(Covered in detail in upcoming ConfigMap/Secret sections.)
 
 ---
