@@ -19,6 +19,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 14. [Pod Commands & Arguments](#14-pod-commands--arguments)
 15. [Environment Variables in Pods](#15-environment-variables-in-pods)
 16. [ConfigMaps](#16-configmaps)
+17. [Secrets](#17-secrets)
 
 ---
 
@@ -1050,5 +1051,127 @@ spec:
 ```
 - Each key in the ConfigMap becomes a **file** inside the mounted directory (`/opt/app-config`), with the key's value as the file's contents.
 - Useful when an app expects configuration as files rather than env vars.
+
+---
+
+## 17. Secrets
+
+### Why (vs ConfigMaps)
+- ConfigMaps store data in **plain text** — fine for hostnames/usernames, **not safe for passwords/keys**.
+- **Secrets** store sensitive data (passwords, tokens, keys) in an **encoded** (base64) format. Same two-step workflow as ConfigMaps: create → inject.
+
+> ⚠️ Base64 encoding is **not encryption** — it's easily reversible. Secrets are still not fully "secure" at rest by default; treat this as basic obfuscation, not real protection, unless additional encryption-at-rest is configured on the cluster.
+
+**On "safety" of Secrets** — anyone with the base64 string can trivially decode it, so Secrets aren't inherently safe *by encoding*. They're "safer" mainly due to **practices and cluster behavior**, not the encoding itself:
+
+- Best practices: don't commit secret definition files to source control; enable [**encryption at rest**](https://kubernetes.io/docs/tasks/administer-cluster/encrypt-data/) for Secrets in etcd.
+- Kubernetes' own handling:
+  - A secret is only sent to a **node that actually needs it** (has a pod requiring it).
+  - `kubelet` stores it in **tmpfs** (in-memory) on the node — never written to disk.
+  - When the dependent pod is deleted, `kubelet` deletes its local copy of the secret too.
+- For genuinely sensitive data at scale, consider dedicated secret-management tools: **Helm Secrets**, **HashiCorp Vault**, etc. (beyond CKAD scope, but good to know exists).
+
+### Creating a Secret — Imperative
+
+```bash
+# Inline key-value pairs
+kubectl create secret generic app-secret --from-literal=DB_HOST=mysql --from-literal=DB_PASSWORD=paswrd
+
+# From a file
+kubectl create secret generic app-secret --from-file=app_secret.properties
+```
+
+### Creating a Secret — Declarative
+
+Values must be **base64-encoded** manually before writing them in the YAML:
+
+```bash
+echo -n 'mysql' | base64        # → bXlzcWw=
+echo -n 'root' | base64         # → cm9vdA==
+echo -n 'paswrd' | base64       # → cGFzd3Jk
+```
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secret
+data:
+  DB_HOST: bXlzcWw=
+  DB_USER: cm9vdA==
+  DB_PASSWORD: cGFzd3Jk
+```
+`kubectl create -f secret-data.yaml`
+
+> 📌 Same top-level structure as ConfigMap (`apiVersion`, `kind`, `metadata`, `data`) — only difference: `kind: Secret` and base64-encoded values.
+
+### Commands
+
+| Command | Purpose |
+|---|---|
+| `kubectl get secrets` | List secrets (includes some Kubernetes-internal secrets too) |
+| `kubectl describe secret <name>` | Shows secret **attributes/keys only** — values are hidden |
+| `kubectl get secret <name> -o yaml` | Shows the **base64-encoded values** |
+| `echo -n '<value>' \| base64` | Encode a value |
+| `echo -n '<encoded>' \| base64 --decode` | Decode a value back to plain text |
+
+### Injecting a Secret into a Pod (as env vars)
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp-pod
+spec:
+  containers:
+    - name: myapp-container
+      image: myapp
+      envFrom:
+        - secretRef:
+            name: app-secret
+```
+- `envFrom` + `secretRef` — same pattern as `configMapRef`, all keys become env vars.
+
+### Single Env Var from a Secret
+
+```yaml
+env:
+  - name: DB_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: app-secret
+        key: DB_PASSWORD
+```
+
+### Secret as Mounted Volume (files)
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp-pod
+spec:
+  containers:
+    - name: myapp-container
+      image: myapp
+      volumeMounts:
+        - name: app-secret-volume
+          mountPath: /opt/app-secret
+  volumes:
+    - name: app-secret-volume
+      secret:
+        secretName: app-secret
+```
+- Each key in the secret becomes a **file** in the mount path, with the **decoded** value as file content (e.g. `/opt/app-secret/DB_PASSWORD` contains the plain password).
+
+### ConfigMap vs Secret — Quick Comparison
+
+| | ConfigMap | Secret |
+|---|---|---|
+| Purpose | Non-sensitive config | Sensitive data (passwords, keys, tokens) |
+| Storage format | Plain text | Base64-encoded |
+| `kind` | `ConfigMap` | `Secret` |
+| Create imperative | `kubectl create configmap ...` | `kubectl create secret generic ...` |
+| Injection methods | `envFrom`/`env`+`configMapKeyRef`/volume | `envFrom`/`env`+`secretKeyRef`/volume |
 
 ---
