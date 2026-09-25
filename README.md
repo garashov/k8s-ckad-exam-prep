@@ -221,6 +221,7 @@ spec:
 |---|---|
 | `kubectl create -f pod-definition.yaml` | Create object(s) from a YAML file |
 | `kubectl get pods` | List pods |
+| `kubectl get pods -o wide` | List pods with extra details (Node, IP, etc.) |
 | `kubectl describe pod <name>` | Detailed info: creation time, labels, containers, associated events |
 | `kubectl delete deployment <name>` | Remove a deployment (e.g. cleanup before creating a fresh pod) |
 
@@ -462,7 +463,11 @@ Breakdown: `<service>.<namespace>.svc.cluster.local` — `cluster.local` = defau
 | `kubectl create -f pod-definition.yaml --namespace=dev` | Create a pod in a specific namespace (CLI override) |
 | `kubectl create namespace dev` | Create a namespace directly via CLI |
 | `kubectl get pods --all-namespaces` (or `-A`) | List pods across **all** namespaces |
+| `kubectl config current-context` | Show which context is currently active |
+| `kubectl config set-context --current --namespace=dev` | Same as above, using `--current` instead of naming the context explicitly |
+| `kubectl config set-context --current -n dev` | Same as above, using the short flag `-n` (note: no `=` with short flags) |
 | `kubectl config set-context $(kubectl config current-context) --namespace=dev` | Permanently switch the **current context** to a namespace (no need to pass `--namespace` each time) |
+| `kubectl config get-contexts` | List all contexts and see which one is currently active |
 
 To permanently bind a pod to a namespace in its YAML (instead of passing `--namespace` every time):
 ```yaml
