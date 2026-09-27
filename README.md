@@ -20,6 +20,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 15. [Environment Variables in Pods](#15-environment-variables-in-pods)
 16. [ConfigMaps](#16-configmaps)
 17. [Secrets](#17-secrets)
+18. [Encrypting Secret Data at Rest (etcd)](#18-encrypting-secret-data-at-rest-etcd)
 
 ---
 
@@ -1173,5 +1174,107 @@ spec:
 | `kind` | `ConfigMap` | `Secret` |
 | Create imperative | `kubectl create configmap ...` | `kubectl create secret generic ...` |
 | Injection methods | `envFrom`/`env`+`configMapKeyRef`/volume | `envFrom`/`env`+`secretKeyRef`/volume |
+
+---
+
+## 18. Encrypting Secret Data at Rest (etcd)
+
+### The Problem
+- Secrets are only **base64-encoded**, not encrypted.
+- By default, secret data is stored in **etcd in plain (unencrypted) form** — anyone with etcd access can read all secrets, even without needing to decode anything.
+
+### Checking Whether Encryption-at-Rest Is Enabled
+```bash
+ps -aux | grep kube-api | grep encryption-provider-config
+```
+- No result → encryption at rest is **not enabled**.
+- Can also inspect the static pod manifest directly (kubeadm setups): `/etc/kubernetes/manifests/kube-apiserver.yaml` — look for `--encryption-provider-config`.
+
+### Inspecting Raw Secret Data in etcd (to prove the problem)
+```bash
+ETCDCTL_API=3 etcdctl \
+  --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+  --cert=/etc/kubernetes/pki/etcd/server.crt \
+  --key=/etc/kubernetes/pki/etcd/server.key \
+  get /registry/secrets/default/my-secret | hexdump -C
+```
+- etcd stores secrets under path: `/registry/secrets/<namespace>/<secret-name>`
+- The `hexdump`/text output reveals the value **in plain readable text** if encryption isn't enabled.
+
+### Enabling Encryption at Rest
+
+**1. Create an `EncryptionConfiguration` file** (e.g. `/etc/kubernetes/enc/enc.yaml`):
+```yaml
+apiVersion: apiserver.config.k8s.io/v1
+kind: EncryptionConfiguration
+resources:
+  - resources:
+      - secrets
+    providers:
+      - aescbc:
+          keys:
+            - name: key1
+              secret: <base64-encoded-32-byte-key>
+      - identity: {}
+```
+
+| Field | Notes |
+|---|---|
+| `resources` | Which resource types to encrypt (e.g. just `secrets` — you don't have to encrypt everything) |
+| `providers` | A **list** — order matters! |
+
+- Providers include: `identity` (no encryption — the default/no-op), `aescbc`, `aesgcm`, `secretbox`, etc.
+- **The first provider in the list is used for encryption.** Subsequent ones are only tried for decryption (e.g. for backward compatibility during a migration).
+- ⚠️ If `identity` is listed **first**, nothing gets encrypted — put your real encryption provider (e.g. `aescbc`) first, `identity` last.
+- Generate a random 32-byte base64 key: `head -c 32 /dev/urandom | base64`
+
+**2. Store the file where the API server can reach it**, e.g. `/etc/kubernetes/enc/enc.yaml` on the control-plane node.
+
+**3. Edit the kube-apiserver static pod manifest** (`/etc/kubernetes/manifests/kube-apiserver.yaml`):
+- Add the flag: `--encryption-provider-config=/etc/kubernetes/enc/enc.yaml`
+- Add a **volume mount** in the container spec pointing to that path inside the pod.
+- Add the corresponding **volume** (hostPath) pointing to the local directory containing the file.
+- Saving this file causes kubeadm to **automatically restart** the kube-apiserver static pod.
+
+```yaml
+spec:
+  containers:
+  - command:
+    - kube-apiserver
+    ...
+    - --encryption-provider-config=/etc/kubernetes/enc/enc.yaml  # add this line
+    volumeMounts:
+    ...
+    - name: enc                           # add this line
+      mountPath: /etc/kubernetes/enc      # add this line
+      readOnly: true                      # add this line
+    ...
+  volumes:
+  ...
+  - name: enc                             # add this line
+    hostPath:                             # add this line
+      path: /etc/kubernetes/enc           # add this line
+      type: DirectoryOrCreate             # add this line
+```
+
+- `volumes[].name` and `volumeMounts[].name` must **match** (`enc`) — this is what links the mount to the volume.
+- `hostPath.path` = the directory on the control-plane node's filesystem holding `enc.yaml`.
+- `mountPath` = where that directory appears **inside** the kube-apiserver container (must match the path used in `--encryption-provider-config`).
+- `type: DirectoryOrCreate` creates the host directory if it doesn't already exist.
+
+**4. Verify:**
+```bash
+ps -aux | grep kube-api | grep encryption-provider-config
+# or, for containerd clusters:
+crictl pods   # check kube-apiserver pod status/restart
+```
+
+### Important Behavior Notes
+- ⚠️ **Encryption only applies going forward** — enabling it does **not** retroactively encrypt secrets that already existed in etcd.
+- To encrypt **existing** secrets: re-save them with the same data, which forces a rewrite:
+  ```bash
+  kubectl get secrets -A -o json | kubectl replace -f -
+  ```
+  (Reads all existing secrets and replaces them with identical data — the act of writing triggers encryption under the new config.)
 
 ---
