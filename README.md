@@ -21,6 +21,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 16. [ConfigMaps](#16-configmaps)
 17. [Secrets](#17-secrets)
 18. [Encrypting Secret Data at Rest (etcd)](#18-encrypting-secret-data-at-rest-etcd)
+19. [Docker Security Basics](#19-docker-security-basics)
 
 ---
 
@@ -1185,7 +1186,7 @@ spec:
 
 ### Checking Whether Encryption-at-Rest Is Enabled
 ```bash
-ps -aux | grep kube-api | grep encryption-provider-config
+ps -aux | grep kube-apiserver | grep encryption-provider-config
 ```
 - No result → encryption at rest is **not enabled**.
 - Can also inspect the static pod manifest directly (kubeadm setups): `/etc/kubernetes/manifests/kube-apiserver.yaml` — look for `--encryption-provider-config`.
@@ -1264,7 +1265,7 @@ spec:
 
 **4. Verify:**
 ```bash
-ps -aux | grep kube-api | grep encryption-provider-config
+ps -aux | grep kube-apiserver | grep encryption-provider-config
 # or, for containerd clusters:
 crictl pods   # check kube-apiserver pod status/restart
 ```
@@ -1276,5 +1277,50 @@ crictl pods   # check kube-apiserver pod status/restart
   kubectl get secrets -A -o json | kubectl replace -f -
   ```
   (Reads all existing secrets and replaces them with identical data — the act of writing triggers encryption under the new config.)
+
+---
+
+## 19. Docker Security Basics
+
+> Foundational for understanding Kubernetes **SecurityContext** (next section).
+
+### Process Isolation via Namespaces
+- Containers are **not** fully isolated VMs — they **share the host kernel**, isolated via Linux **namespaces**.
+- A process inside a container has a **different PID** depending on which namespace you view it from:
+  - Inside the container: sees only its own namespace → e.g. `sleep` process shown as **PID 1**.
+  - On the host: sees all processes (host's own + all containers' child namespaces) → same process appears with a **different (real) PID**.
+
+```mermaid
+flowchart TB
+    subgraph Host Namespace
+        H[OS processes, Docker daemon,<br/>SSH server, ...]
+        subgraph Container Namespace
+            C[sleep process<br/>PID 1 inside container]
+        end
+    end
+```
+
+### User Security
+- **By default, Docker runs container processes as root.**
+- Override at runtime: `docker run --user=1000 <image>`
+- Or bake it into the image via the `USER` instruction in the Dockerfile:
+  ```dockerfile
+  FROM ubuntu
+  USER 1000
+  ```
+
+### Is Container root = Host root?
+**No** — Docker limits what the container's root user can actually do, via **Linux capabilities**.
+
+- Full root normally has unrestricted power: modify any file/permissions, manage processes, set UID/GID, network operations (bind ports, broadcast), reboot host, change system clock, etc.
+- Docker containers run with only a **limited default set** of these capabilities — container root can't reboot the host or disrupt other containers by default.
+
+### Controlling Capabilities
+
+| Flag | Purpose |
+|---|---|
+| `docker run --cap-add=<CAP> ...` | Add a specific capability beyond the default set |
+| `docker run --cap-drop=<CAP> ...` | Remove a capability from the default set |
+| `docker run --privileged ...` | Run with **all** capabilities enabled (removes the restrictions entirely) |
 
 ---
