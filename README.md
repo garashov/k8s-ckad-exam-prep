@@ -23,6 +23,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 18. [Encrypting Secret Data at Rest (etcd)](#18-encrypting-secret-data-at-rest-etcd)
 19. [Docker Security Basics](#19-docker-security-basics)
 20. [Kubernetes Security Context](#20-kubernetes-security-context)
+21. [Resource Requirements — Requests, Limits & Quotas](#21-resource-requirements--requests-limits--quotas)
 
 ---
 
@@ -1373,5 +1374,147 @@ spec:
 |---|---|
 | `runAsUser` | Sets the UID the container process runs as |
 | `capabilities.add` | List of additional Linux capabilities to grant (container-level only) |
+
+---
+
+## 21. Resource Requirements — Requests, Limits & Quotas
+
+### How Scheduling Uses Resources
+- Each **node** has a fixed pool of CPU/memory.
+- Each **pod** (really, each container) can declare how much it needs.
+- The **Scheduler** places a pod only on a node with **sufficient resources**; if none qualify, the pod stays **`Pending`**.
+  - `kubectl describe pod <name>` → shows event like *"Insufficient CPU"*.
+
+### Requests vs Limits
+
+| Concept | Meaning |
+|---|---|
+| **Request** | Minimum guaranteed amount of CPU/memory reserved for the container; used by the scheduler to pick a node |
+| **Limit** | Maximum amount the container is allowed to consume |
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp-pod
+spec:
+  containers:
+    - name: myapp-container
+      image: myapp
+      resources:
+        requests:
+          memory: "4Gi"
+          cpu: 2
+        limits:
+          memory: "512Mi"
+          cpu: 1
+```
+- `requests` / `limits` are set **per container**, not per pod (multiple containers = independent settings each).
+
+### CPU Units
+- 1 (whole) CPU = 1 vCPU (AWS) = 1 core (GCP/Azure) = 1 hyperthread.
+- Fractional values allowed: `0.1` CPU = `100m` (millicpu). Minimum valid unit: `1m`.
+
+### Memory Units
+
+| Suffix | Meaning |
+|---|---|
+| `M` (mega) | 1,000,000 bytes (decimal) |
+| `Mi` (mebi) | 1,048,576 bytes (binary, = 1024 KiB) |
+| `G` (giga) | 1000 MB (decimal) |
+| `Gi` (gibi) | 1024 MiB (binary) |
+
+> ⚠️ `G` ≠ `Gi` — decimal vs binary. Same pattern applies to K/Ki.
+
+### What Happens at the Limit
+
+| Resource | Exceeding limit |
+|---|---|
+| **CPU** | **Throttled** — container capped, cannot exceed the limit, no crash |
+| **Memory** | **Cannot be throttled** — if a container tries to use more memory than its limit (persistently), it gets **killed** → `OOMKilled` (Out Of Memory Kill), visible in pod status/logs |
+
+### Default Behavior (⚠️ important)
+- **By default, Kubernetes sets NO request or limit** on any container.
+- This means a single pod can consume all CPU/memory on a node and starve others.
+
+### Requests/Limits Combinations — CPU Behavior
+
+| Scenario | Result |
+|---|---|
+| No request, no limit | Any pod can consume all available CPU — can starve other pods |
+| No request, limit set | Kubernetes sets request = limit automatically; pod guaranteed exactly that much, no more |
+| Both request and limit set | Pod guaranteed the request amount, can burst up to the limit, no more |
+| **Request set, no limit** ✅ recommended | Pod guaranteed its request; can use more if available, but **never starved** — if another pod needs its guaranteed share, it gets it |
+
+- Setting hard `limits` makes sense when you need to **actively restrict** usage (e.g. multi-tenant public labs preventing cryptomining abuse).
+- If you skip limits, **make sure every pod has a request set** — otherwise a pod with no request can still starve one that does, since scheduling guarantees only apply relative to requests.
+- Same logic applies to memory, **except**: since memory can't be throttled, over-limit memory usage results in **termination**, not just slowdown.
+
+### LimitRange (namespace-level defaults)
+
+Sets **default** request/limit values for containers that don't specify their own, plus min/max bounds — applies **only to newly created pods** (no retroactive effect).
+
+```yaml
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: cpu-resource-constraint
+spec:
+  limits:
+    - default:
+        cpu: 500m
+      defaultRequest:
+        cpu: 500m
+      max:
+        cpu: "1"
+      min:
+        cpu: 100m
+      type: Container
+```
+
+Memory example:
+```yaml
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: memory-resource-constraint
+spec:
+  limits:
+    - default:
+        memory: 1Gi
+      defaultRequest:
+        memory: 1Gi
+      max:
+        memory: 1Gi
+      min:
+        memory: 500Mi
+      type: Container
+```
+
+### ResourceQuota (namespace-level hard cap)
+
+Limits the **total** combined resource consumption across **all pods** in a namespace.
+
+```yaml
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: my-resource-quota
+  namespace: dev
+spec:
+  hard:
+    requests.cpu: 4
+    requests.memory: 4Gi
+    limits.cpu: 10
+    limits.memory: 10Gi
+```
+
+### Quick Comparison
+
+| | Scope | Purpose |
+|---|---|---|
+| `resources.requests`/`limits` | Per-container | Individual container's guarantee/cap |
+| `LimitRange` | Per-namespace | Default + min/max values for containers that don't specify their own |
+| `ResourceQuota` | Per-namespace | Hard ceiling on **total** resources across all pods combined |
 
 ---
