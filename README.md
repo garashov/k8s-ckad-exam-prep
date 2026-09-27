@@ -22,6 +22,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 17. [Secrets](#17-secrets)
 18. [Encrypting Secret Data at Rest (etcd)](#18-encrypting-secret-data-at-rest-etcd)
 19. [Docker Security Basics](#19-docker-security-basics)
+20. [Kubernetes Security Context](#20-kubernetes-security-context)
 
 ---
 
@@ -1319,8 +1320,58 @@ flowchart TB
 
 | Flag | Purpose |
 |---|---|
-| `docker run --cap-add=<CAP> ...` | Add a specific capability beyond the default set |
-| `docker run --cap-drop=<CAP> ...` | Remove a capability from the default set |
-| `docker run --privileged ...` | Run with **all** capabilities enabled (removes the restrictions entirely) |
+| `docker run --cap-add=<CAP>` | Add a specific capability beyond the default set |
+| `docker run --cap-drop=<CAP>` | Remove a capability from the default set |
+| `docker run --privileged` | Run with **all** capabilities enabled (removes the restrictions entirely) |
+
+---
+
+## 20. Kubernetes Security Context
+
+Maps Docker security concepts (Section 19) onto Kubernetes: `securityContext` can be set at the **Pod level** and/or **container level**.
+
+| Level | Effect |
+|---|---|
+| **Pod-level** (`spec.securityContext`) | Applies to **all containers** in the pod |
+| **Container-level** (`spec.containers[].securityContext`) | Applies to that container only; **overrides** the pod-level setting if both are set |
+
+### Pod-Level Example
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web-pod
+spec:
+  securityContext:
+    runAsUser: 1000
+  containers:
+    - name: ubuntu
+      image: ubuntu
+      command: ["sleep", "3600"]
+```
+
+### Container-Level Example (with capabilities)
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web-pod
+spec:
+  containers:
+    - name: ubuntu
+      image: ubuntu
+      command: ["sleep", "3600"]
+      securityContext:
+        runAsUser: 1000
+        capabilities:
+          add: ["MAC_ADMIN"]
+```
+
+> 📌 **`capabilities` is only supported at the container level**, not pod level (capabilities are Linux/Docker container-level constructs).
+
+| Field | Purpose |
+|---|---|
+| `runAsUser` | Sets the UID the container process runs as |
+| `capabilities.add` | List of additional Linux capabilities to grant (container-level only) |
 
 ---
