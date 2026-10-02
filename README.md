@@ -24,6 +24,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 19. [Docker Security Basics](#19-docker-security-basics)
 20. [Kubernetes Security Context](#20-kubernetes-security-context)
 21. [Resource Requirements — Requests, Limits & Quotas](#21-resource-requirements--requests-limits--quotas)
+22. [Service Accounts](#22-service-accounts)
 
 ---
 
@@ -1516,5 +1517,86 @@ spec:
 | `resources.requests`/`limits` | Per-container | Individual container's guarantee/cap |
 | `LimitRange` | Per-namespace | Default + min/max values for containers that don't specify their own |
 | `ResourceQuota` | Per-namespace | Hard ceiling on **total** resources across all pods combined |
+
+---
+
+## 22. Service Accounts
+
+### User Accounts vs Service Accounts
+
+| | Used by | Example |
+|---|---|---|
+| **User account** | Humans | Admin/developer accessing the cluster |
+| **Service account** | Machines/applications | Prometheus polling metrics, Jenkins deploying apps, a custom dashboard app querying the API |
+
+### Creating & Using a Service Account
+
+```bash
+kubectl create serviceaccount dashboard-sa
+kubectl get serviceaccount
+```
+
+- **Pre-v1.22 behavior**: creating a service account automatically created a **token** stored inside a **Secret** object (e.g. `dashboard-sa-token-kbbdm`), linked to the service account.
+  - View it: `kubectl describe secret <secret-name>`
+  - Use the token as a **Bearer token** in API calls: `Authorization: Bearer <token>`
+
+### Mounting a Service Account into a Pod
+- If the third-party app is **hosted on the cluster itself**, you don't need to manually copy tokens — Kubernetes can auto-mount the service account's token as a volume into the pod.
+- **Every namespace has a `default` service account** automatically. Every pod that doesn't specify one gets the `default` service account + its token **auto-mounted** at:
+  ```
+  /var/run/secrets/kubernetes.io/serviceaccount/
+  ```
+  containing (among other files) a `token` file with the actual token content.
+- The `default` service account is **heavily restricted** (basic API queries only).
+
+### Using a Custom Service Account in a Pod
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-dashboard-pod
+spec:
+  serviceAccountName: dashboard-sa
+  containers:
+    - name: my-dashboard
+      image: my-dashboard-image
+```
+
+> ⚠️ You **cannot edit** the service account of an existing **Pod** — must delete & recreate.
+> ✅ For a **Deployment**, editing the service account is fine — a template change triggers an automatic rollout (new pods created with the right service account).
+
+### Opting Out of Auto-Mounting
+```yaml
+spec:
+  automountServiceAccountToken: false
+```
+
+### Version Changes (v1.22 → v1.24) ⭐
+
+| Version | Change |
+|---|---|
+| **Pre-1.22** | Service account creation auto-creates a Secret with a **non-expiring**, non-audience-bound JWT token — security/scalability concern (checkable at [jwt.io](https://jwt.io)) |
+| **v1.22** | **TokenRequestAPI** introduced (KEP-1205): pods now get a token that is **time-bound, audience-bound, object-bound** — generated on-the-fly and mounted as a **projected volume** (not a static Secret) |
+| **v1.24** | (KEP-2799) Creating a service account **no longer auto-creates a Secret/token** at all. To get a token manually: |
+
+```bash
+kubectl create token <service-account-name>
+```
+- Prints a token to the screen with a **default 1-hour expiry** (configurable via flags).
+- Decoding this token (e.g. at jwt.io) shows an **expiry claim**, unlike the old-style tokens.
+
+### Creating a Non-Expiring Token Manually (post-1.24, if truly needed)
+```yaml
+apiVersion: v1
+kind: Secret
+type: kubernetes.io/service-account-token
+metadata:
+  name: dashboard-sa-token
+  annotations:
+    kubernetes.io/service-account.name: dashboard-sa
+spec: {}
+```
+- The named service account **must already exist** before creating this secret, or it won't be linked.
+- ⚠️ Kubernetes docs recommendation: only do this if you **can't** use the TokenRequestAPI, and only if you're okay with the security exposure of a non-expiring credential. **Prefer `kubectl create token`** or the automatic pod-mounted projected-volume token wherever possible.
 
 ---
