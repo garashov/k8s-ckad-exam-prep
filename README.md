@@ -25,6 +25,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 20. [Kubernetes Security Context](#20-kubernetes-security-context)
 21. [Resource Requirements — Requests, Limits & Quotas](#21-resource-requirements--requests-limits--quotas)
 22. [Service Accounts](#22-service-accounts)
+23. [Taints & Tolerations](#23-taints--tolerations)
 
 ---
 
@@ -1598,5 +1599,75 @@ spec: {}
 ```
 - The named service account **must already exist** before creating this secret, or it won't be linked.
 - ⚠️ Kubernetes docs recommendation: only do this if you **can't** use the TokenRequestAPI, and only if you're okay with the security exposure of a non-expiring credential. **Prefer `kubectl create token`** or the automatic pod-mounted projected-volume token wherever possible.
+
+---
+
+## 23. Taints & Tolerations
+
+### Analogy
+A **taint** = bug repellent sprayed on a person (node). A **toleration** = a bug's immunity to that specific smell. Only bugs (pods) tolerant of the specific repellent can land on that person (node). Both conditions matter: the taint on the node, and the pod's toleration to it.
+
+> ⚠️ Taints/tolerations are **not** a security mechanism — they're purely about **scheduling restrictions**.
+
+### Core Rule
+- **Taints** are set on **nodes**.
+- **Tolerations** are set on **pods**.
+- By default, pods have **no tolerations** → they can't be scheduled on any tainted node unless explicitly given a matching toleration.
+
+```mermaid
+flowchart TB
+    subgraph Node1["Node 1 (tainted: app=blue:NoSchedule)"]
+    end
+    PodA[Pod A - no toleration] -.->|repelled| Node1
+    PodD["Pod D (tolerates app=blue)"] -->|accepted| Node1
+```
+
+### Taint Effects
+
+| Effect | Behavior |
+|---|---|
+| `NoSchedule` | New pods without matching toleration **won't be scheduled** on the node |
+| `PreferNoSchedule` | System **tries to avoid** placing non-tolerant pods there, but **not guaranteed** |
+| `NoExecute` | New non-tolerant pods won't be scheduled, **AND existing non-tolerant pods already on the node get evicted** |
+
+### Commands & Syntax
+
+**Tainting a node:**
+```bash
+kubectl taint nodes node1 app=blue:NoSchedule
+```
+Format: `kubectl taint nodes <node-name> <key>=<value>:<taint-effect>`
+
+**Adding a toleration to a pod:**
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp-pod
+spec:
+  containers:
+    - name: nginx-container
+      image: nginx
+  tolerations:
+    - key: "app"
+      operator: "Equal"
+      value: "blue"
+      effect: "NoSchedule"
+```
+> ⚠️ All toleration values must be in **quotes** (strings).
+
+### Important Clarifications
+- Taints/tolerations **only restrict what a node will accept** — they do **not** guarantee a tolerant pod will actually land on that specific node. If other untainted nodes exist, the tolerant pod might still be scheduled elsewhere.
+- To **force** a pod onto a specific node (rather than just allow it), you need **Node Affinity** (separate concept, covered next).
+- `NoExecute` on a node will **evict already-running pods** that don't tolerate it — even if they were placed before the taint existed.
+
+### Master/Control-Plane Node Taint
+- Kubernetes **automatically taints the master node** at cluster setup to prevent workloads being scheduled there (best practice: don't run application pods on the control plane).
+- View it:
+  ```bash
+  kubectl describe node kube-master
+  # look for the Taints: section
+  ```
+- This can be modified/removed, but generally shouldn't be for production clusters.
 
 ---
