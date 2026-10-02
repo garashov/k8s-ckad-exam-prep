@@ -28,6 +28,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 23. [Taints & Tolerations](#23-taints--tolerations)
 24. [Node Selectors](#24-node-selectors)
 25. [Node Affinity](#25-node-affinity)
+26. [Taints/Tolerations + Node Affinity Combined](#26-taintstolerations--node-affinity-combined)
 
 ---
 
@@ -1741,8 +1742,6 @@ spec:
                 values:
                   - large
                   - medium
-
-
 ```
 
 - `nodeSelectorTerms` → `matchExpressions` is a **list** of `key`/`operator`/`values` objects.
@@ -1771,5 +1770,36 @@ The type name encodes **two lifecycle phases**: "during scheduling" (pod doesn't
 ### Choosing a Type
 - Use **`required...`** when placement is critical (pod must not run anywhere else) — accepts the risk of the pod staying unscheduled if no match.
 - Use **`preferred...`** when running the workload matters more than exact placement — accepts the risk of landing on a non-ideal node rather than not running at all.
+
+---
+
+## 26. Taints/Tolerations + Node Affinity Combined
+
+### The Problem
+Shared cluster, 3 "colored" nodes (blue/red/green) and 3 matching pods, plus **other teams' pods/nodes** in the same cluster. Goal: **perfect 1:1 dedication** —
+- Blue pod → blue node only
+- Red pod → red node only
+- Green pod → green node only
+- **No other pods** should land on these 3 nodes, and **these pods should never** land on other nodes.
+
+### Why Neither Alone Is Enough
+
+| Approach alone | What it solves | What it misses |
+|---|---|---|
+| **Taints + Tolerations** only | Keeps **other teams' pods OFF** your nodes (they lack the toleration) | Doesn't stop **your pods** from landing on **other (untainted) nodes** — e.g. red pod might land on an unrelated node since nothing forces it toward the red node specifically |
+| **Node Affinity** only | Keeps **your pods ON** your intended nodes | Doesn't stop **other teams' pods** from also landing on your nodes (nothing repels them) |
+
+### The Solution: Combine Both
+
+```mermaid
+flowchart LR
+    T["Taints + Tolerations<br/>(repel other pods)"] --> Goal[Fully dedicated node]
+    A["Node Affinity<br/>(attract own pods)"] --> Goal
+```
+
+1. **Taint** each node with its color (`kubectl taint nodes node1 color=blue:NoSchedule`) and add a matching **toleration** to the corresponding pod → prevents **other pods** from landing on your nodes.
+2. **Label** each node with its color (`kubectl label nodes node1 color=blue`) and add matching **node affinity** to the pod → prevents **your pods** from landing on **other** nodes.
+
+**Result**: taints/tolerations handle the "keep others out" half, node affinity handles the "keep mine in" half — together achieving full node dedication.
 
 ---
