@@ -27,6 +27,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 22. [Service Accounts](#22-service-accounts)
 23. [Taints & Tolerations](#23-taints--tolerations)
 24. [Node Selectors](#24-node-selectors)
+25. [Node Affinity](#25-node-affinity)
 
 ---
 
@@ -1705,5 +1706,70 @@ spec:
 - Only supports simple **exact-match** logic (single key=value).
 - **Cannot express**: OR conditions ("large OR medium"), NOT conditions ("not small"), or other complex logic.
 - For these more advanced requirements → **Node Affinity** (covered next).
+
+---
+
+## 25. Node Affinity
+
+Same goal as `nodeSelector` (control which nodes a pod lands on), but supports **advanced expressions**: OR logic, NOT logic, existence checks, etc.
+
+### Definition File
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp-pod
+spec:
+  containers:
+    - name: data-processor
+      image: data-processor
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: size
+                # ---------------
+                # operator: Exists
+                # ---------------
+                # operator: NotIn
+                # values:
+                #   - small
+                # ---------------
+                operator: In
+                values:
+                  - large
+                  - medium
+
+
+```
+
+- `nodeSelectorTerms` → `matchExpressions` is a **list** of `key`/`operator`/`values` objects.
+
+### Operators
+
+| Operator | Meaning |
+|---|---|
+| `In` | Node's label value must be **one of** the listed values (e.g. `large` or `medium`) |
+| `NotIn` | Node's label value must **not** be any of the listed values |
+| `Exists` | Node just needs the **key** to exist (no `values` needed — doesn't compare values) |
+| (others) | `Gt`, `Lt`, `DoesNotExist`, etc. — check docs for full list |
+
+### Affinity Types (the "sentence" property names)
+
+The type name encodes **two lifecycle phases**: "during scheduling" (pod doesn't exist yet) and "during execution" (pod is already running).
+
+| Type | During Scheduling (new pod) | During Execution (already running) |
+|---|---|---|
+| `requiredDuringSchedulingIgnoredDuringExecution` | **Mandatory** — if no matching node exists, pod **won't be scheduled** | Changes to node labels **ignored** — running pod stays put |
+| `preferredDuringSchedulingIgnoredDuringExecution` | **Best-effort** — scheduler tries to match, but places the pod anywhere if no match found | Changes to node labels **ignored** — running pod stays put |
+| *(planned, not yet available at time of recording)* `requiredDuringSchedulingRequiredDuringExecution` | Mandatory at scheduling | Would **evict** a running pod if node labels later change and no longer match |
+
+> 📌 **Currently (both available types) use "IgnoredDuringExecution"** — meaning once a pod is running, label changes on its node do **not** affect it, whether the node still matches or not.
+
+### Choosing a Type
+- Use **`required...`** when placement is critical (pod must not run anywhere else) — accepts the risk of the pod staying unscheduled if no match.
+- Use **`preferred...`** when running the workload matters more than exact placement — accepts the risk of landing on a non-ideal node rather than not running at all.
 
 ---
