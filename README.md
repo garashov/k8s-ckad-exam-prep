@@ -26,6 +26,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 21. [Resource Requirements — Requests, Limits & Quotas](#21-resource-requirements--requests-limits--quotas)
 22. [Service Accounts](#22-service-accounts)
 23. [Taints & Tolerations](#23-taints--tolerations)
+24. [Node Selectors](#24-node-selectors)
 
 ---
 
@@ -1669,5 +1670,40 @@ spec:
   # look for the Taints: section
   ```
 - This can be modified/removed, but generally shouldn't be for production clusters.
+
+---
+
+## 24. Node Selectors
+
+### Problem
+You have nodes with different hardware (e.g. 2 small nodes, 1 large node) and want certain pods (e.g. heavy data-processing jobs) to only run on the large node. By default, the scheduler can place any pod on any node.
+
+> 📌 Note the difference from taints/tolerations: taints *repel* pods from a node unless tolerant; node selectors (and affinity) *attract/restrict* a pod *to* specific nodes. They solve related but distinct problems and are often used together.
+
+### Step 1 — Label the Node
+```bash
+kubectl label nodes node1 size=large
+```
+Format: `kubectl label nodes <node-name> <key>=<value>`
+
+### Step 2 — Use `nodeSelector` in the Pod Spec
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp-pod
+spec:
+  containers:
+    - name: data-processor
+      image: data-processor
+  nodeSelector:
+    size: large
+```
+- The pod will now only be scheduled on nodes with the label `size=large`.
+
+### Limitations of `nodeSelector`
+- Only supports simple **exact-match** logic (single key=value).
+- **Cannot express**: OR conditions ("large OR medium"), NOT conditions ("not small"), or other complex logic.
+- For these more advanced requirements → **Node Affinity** (covered next).
 
 ---
