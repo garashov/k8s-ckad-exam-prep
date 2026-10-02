@@ -830,6 +830,39 @@ ENTRYPOINT FLASK_APP=/opt/source-code/app.py flask run
 | `docker push <account>/<image-name>` | Publish image to Docker Hub |
 | `docker history <image-name>` | Show layers and their sizes |
 
+### Running Containers — Common `docker run` Options
+
+| Command | Purpose |
+|---|---|
+| `docker run <image>` | Run a container from an image |
+| `docker run -d <image>` | Run in **detached** mode (background) |
+| `docker run --name <container-name> <image>` | Give the container a custom name |
+| `docker run -p <host-port>:<container-port> <image>` | **Port mapping** — e.g. `-p 8080:80` maps host port 8080 → container port 80 |
+| `docker run -v <host-path>:<container-path> <image>` | **Volume mapping** — mount a host directory into the container |
+| `docker run -e <VAR_NAME>=<value> <image>` | Set an **environment variable** inside the container |
+| `docker run -it <image> <command>` | **Interactive** mode with a **terminal** attached (e.g. to get a shell: `docker run -it ubuntu bash`) |
+| `docker run --rm <image>` | Automatically **remove** the container once it exits |
+| `docker run --network <network-name> <image>` | Attach to a specific Docker network |
+
+**Combined example:**
+```bash
+docker run -d --name myapp -p 8080:80 -v /host/data:/app/data -e APP_COLOR=blue myimage
+```
+Runs `myimage` in the background, named `myapp`, mapping host port 8080 to container port 80, mounting `/host/data` into `/app/data`, and setting `APP_COLOR=blue`.
+
+### Checking the Base OS Distro of an Image
+
+`docker inspect <image>` shows `"Os": "linux"` — this only confirms the OS **family** (Linux vs Windows), **not** the specific distro (Debian, Alpine, Ubuntu, etc.).
+
+To find the actual base distro, run a throwaway container and check `/etc/os-release`:
+```bash
+docker run --rm webapp-color cat /etc/os-release
+```
+- `--rm` auto-removes the container once the command finishes.
+- Output reveals the real distro, e.g. `Debian GNU/Linux` or `Alpine Linux`.
+
+> 💡 Image tag variants matter: `python:3.14` (full Debian-based) and `python:3.14-slim` (same Debian base, fewer packages, smaller) are both Debian — only a tag like `python:3.14-alpine` actually switches the base OS to **Alpine** (different libc: `musl` vs `glibc`, which can affect package compatibility).
+
 > 📌 Almost anything can be containerized — not just servers/databases, but dev tools, browsers, utilities, even desktop apps.
 
 ---
