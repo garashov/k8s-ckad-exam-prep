@@ -1568,10 +1568,31 @@ spec:
 
 ### Creating & Using a Service Account
 
+**Imperative:**
 ```bash
 kubectl create serviceaccount dashboard-sa
-kubectl get serviceaccount
+kubectl create serviceaccount dashboard-sa -n dev           # in a specific namespace
+kubectl create serviceaccount dashboard-sa --dry-run=client -o yaml > sa.yaml   # generate YAML
 ```
+
+**Declarative (YAML):**
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dashboard-sa
+  namespace: default
+```
+`kubectl create -f sa.yaml`
+
+**Inspecting / managing:**
+
+| Command | Purpose |
+|---|---|
+| `kubectl get serviceaccount` (or `sa`) | List service accounts in the current namespace |
+| `kubectl describe serviceaccount dashboard-sa` | Show details (and tokens/secrets on pre-1.24 clusters) |
+| `kubectl delete serviceaccount dashboard-sa` | Delete a service account |
+| `kubectl set serviceaccount deployment <name> dashboard-sa` | Change the service account of an existing Deployment |
 
 - **Pre-v1.22 behavior**: creating a service account automatically created a **token** stored inside a **Secret** object (e.g. `dashboard-sa-token-kbbdm`), linked to the service account.
   - View it: `kubectl describe secret <secret-name>`
@@ -1603,10 +1624,103 @@ spec:
 > ✅ For a **Deployment**, editing the service account is fine — a template change triggers an automatic rollout (new pods created with the right service account).
 
 ### Opting Out of Auto-Mounting
+
+The `automountServiceAccountToken: false` field can be set in **two places**, and the location differs:
+
+**1. On the Pod** — under `spec` (affects only that pod):
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-dashboard-pod
+spec:
+  automountServiceAccountToken: false
+  serviceAccountName: dashboard-sa
+  containers:
+    - name: my-dashboard
+      image: my-dashboard-image
+```
+
+**2. On the ServiceAccount** — as a **top-level field** (a sibling of `metadata`, **not** under `spec` — ServiceAccounts have no `spec`). Affects every pod that uses this service account:
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dashboard-sa
+automountServiceAccountToken: false
+```
+
+> 📌 If both are set, the **Pod-level setting takes precedence** over the ServiceAccount-level setting.
+> 📌 There's no imperative flag for this on `kubectl create serviceaccount` — generate the YAML with `--dry-run=client -o yaml`, add the field, then create it.
+
+### Mounting the Token Manually (when auto-mount is off)
+
+With `automountServiceAccountToken: false`, the pod gets **no token at all**. If the app still needs API access, you mount one yourself, ideally at the same standard path so the app works unchanged: `/var/run/secrets/kubernetes.io/serviceaccount`.
+
+**Option 1 — Projected volume (recommended; short-lived, auto-refreshed token)**
+
+This reproduces what Kubernetes does automatically, but under your control:
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-dashboard-pod
+spec:
+  automountServiceAccountToken: false
+  serviceAccountName: dashboard-sa
+  containers:
+    - name: my-dashboard
+      image: my-dashboard-image
+      volumeMounts:
+        - name: sa-token
+          mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+          readOnly: true
+  volumes:
+    - name: sa-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: token
+              expirationSeconds: 3600
+          - configMap:
+              name: kube-root-ca.crt
+              items:
+                - key: ca.crt
+                  path: ca.crt
+          - downwardAPI:
+              items:
+                - path: namespace
+                  fieldRef:
+                    fieldPath: metadata.namespace
+```
+
+| Source | File created | Purpose |
+|---|---|---|
+| `serviceAccountToken` | `token` | Time-bound token (via TokenRequest API), refreshed automatically by kubelet |
+| `configMap: kube-root-ca.crt` | `ca.crt` | Cluster CA certificate, so the app can trust the API server (this ConfigMap exists in every namespace) |
+| `downwardAPI` | `namespace` | The pod's namespace |
+
+**Option 2 — Mount the non-expiring token Secret** (the `kubernetes.io/service-account-token` Secret from earlier):
 ```yaml
 spec:
   automountServiceAccountToken: false
+  serviceAccountName: dashboard-sa
+  containers:
+    - name: my-dashboard
+      image: my-dashboard-image
+      volumeMounts:
+        - name: sa-token
+          mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+          readOnly: true
+  volumes:
+    - name: sa-token
+      secret:
+        secretName: dashboard-sa-token
 ```
+- This Secret already contains `token`, `ca.crt` and `namespace`, so one `secret` volume is enough.
+- ⚠️ The token never expires. Prefer Option 1 unless you have a specific reason.
+
+> 💡 Both options need `volumeMounts[].name` to match `volumes[].name` (`sa-token`), as with any volume.
 
 ### Version Changes (v1.22 → v1.24) ⭐
 
@@ -1619,7 +1733,7 @@ spec:
 ```bash
 kubectl create token <service-account-name>
 ```
-- Prints a token to the screen with a **default 1-hour expiry** (configurable via flags).
+- Prints a token to the screen with a **default 1-hour expiry** (configurable, e.g. `kubectl create token dashboard-sa --duration=2h`).
 - Decoding this token (e.g. at jwt.io) shows an **expiry claim**, unlike the old-style tokens.
 
 ### Creating a Non-Expiring Token Manually (post-1.24, if truly needed)
@@ -1631,7 +1745,6 @@ metadata:
   name: dashboard-sa-token
   annotations:
     kubernetes.io/service-account.name: dashboard-sa
-spec: {}
 ```
 - The named service account **must already exist** before creating this secret, or it won't be linked.
 - ⚠️ Kubernetes docs recommendation: only do this if you **can't** use the TokenRequestAPI, and only if you're okay with the security exposure of a non-expiring credential. **Prefer `kubectl create token`** or the automatic pod-mounted projected-volume token wherever possible.
