@@ -2046,33 +2046,64 @@ When a pod has more than one container, `-c` selects the target container:
 Both containers listed under `containers` (see the example above). They start together, with no startup order.
 
 #### 2. Init containers
-Defined in a separate `initContainers` list, using the same fields as normal containers. Each one runs **to completion** before the next one (and the main app) starts.
 
+**Why they exist**: in a normal multi-container pod, every container is expected to keep running for the pod's whole life (e.g. a web app plus a log agent). Init containers are for processes that must **run to completion** instead, such as:
+- pulling code or a binary from a repository for the main app (a **one-time** task when the pod is first created)
+- waiting for an external service or database to be up before the app starts
+
+An init container is configured like any other container, but in a separate `initContainers` list. When the pod is created, each init container runs **to completion**, and the main app starts only after all of them have finished.
+
+**Example: one-time setup task**
 ```yaml
 apiVersion: v1
 kind: Pod
 metadata:
   name: myapp-pod
+  labels:
+    app: myapp
 spec:
-  initContainers:
-    - name: wait-for-db
-      image: busybox
-      command: ['sh', '-c', 'until nslookup db-service; do echo waiting for db; sleep 2; done']
-    - name: api-checker
-      image: busybox
-      command: ['sh', '-c', 'until nslookup api-service; do echo waiting for api; sleep 2; done']
   containers:
-    - name: main-app
-      image: main-app
+    - name: myapp-container
+      image: busybox:1.28
+      command: ['sh', '-c', 'echo The app is running! && sleep 3600']
+  initContainers:
+    - name: init-myservice
+      image: busybox
+      command: ['sh', '-c', 'git clone <some-repository-that-will-be-used-by-application> ;']
+```
+
+**Example: wait for dependencies (several init containers, run in order)**
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp-pod
+  labels:
+    app: myapp
+spec:
+  containers:
+    - name: myapp-container
+      image: busybox:1.28
+      command: ['sh', '-c', 'echo The app is running! && sleep 3600']
+  initContainers:
+    - name: init-myservice
+      image: busybox:1.28
+      command: ['sh', '-c', 'until nslookup myservice; do echo waiting for myservice; sleep 2; done;']
+    - name: init-mydb
+      image: busybox:1.28
+      command: ['sh', '-c', 'until nslookup mydb; do echo waiting for mydb; sleep 2; done;']
 ```
 
 ```mermaid
 flowchart LR
-    I1["init: wait-for-db<br/>runs, then exits"] --> I2["init: api-checker<br/>runs, then exits"] --> M["main app<br/>runs for the pod lifetime"]
+    I1["init-myservice<br/>runs, then exits"] --> I2["init-mydb<br/>runs, then exits"] --> M["myapp-container<br/>runs for the pod lifetime"]
 ```
 
-- Multiple init containers run **one after another**, in the order listed. This is how you define a startup order.
+- Multiple init containers run **one at a time, in the order listed**. This is how you define a startup order.
+- If an init container fails, Kubernetes keeps retrying it until it succeeds, and the main container does not start until then.
 - While they run, `kubectl get pods` shows a status like `Init:0/2`. View an init container's logs with `kubectl logs <pod> -c <init-container>`.
+
+> 📌 The course words the failure case as "Kubernetes restarts the Pod repeatedly". Strictly, the kubelet retries the failed **init container** (per the pod's `restartPolicy`); with `restartPolicy: Never` the pod is instead marked as failed.
 
 #### 3. Sidecar containers
 Declared as an **init container** with `restartPolicy: Always`. That makes it start before the main app but **keep running** instead of exiting.
