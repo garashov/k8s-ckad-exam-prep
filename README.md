@@ -677,7 +677,7 @@ spec:
 
 ---
 
-## 10. Imperative Commands (Exam Tip) ⭐
+## 10. Imperative Commands (Exam Tip)
 
 Declarative (YAML files) is the standard approach, but **imperative commands save major time** on the exam — both for quick one-off tasks and for generating a YAML template to then edit.
 
@@ -1786,6 +1786,29 @@ flowchart TB
 kubectl taint nodes node1 app=blue:NoSchedule
 ```
 Format: `kubectl taint nodes <node-name> <key>=<value>:<taint-effect>`
+
+**Viewing taints on a node:**
+```bash
+kubectl describe node node1 | grep Taints
+```
+
+**Removing a taint from a node** — repeat the exact same taint command and add a **trailing `-`** (minus) at the end:
+```bash
+kubectl taint nodes node1 app=blue:NoSchedule-
+```
+Format: `kubectl taint nodes <node-name> <key>=<value>:<taint-effect>-`
+
+| Variant | Effect |
+|---|---|
+| `kubectl taint nodes node1 app=blue:NoSchedule-` | Removes that exact taint (key, value and effect) |
+| `kubectl taint nodes node1 app:NoSchedule-` | Removes the taint by key + effect (value not needed) |
+| `kubectl taint nodes node1 app-` | Removes **all** taints with key `app`, whatever the effect |
+
+Example: removing the default control-plane taint so pods can be scheduled there:
+```bash
+kubectl taint nodes controlplane node-role.kubernetes.io/control-plane:NoSchedule-
+```
+> 📌 On older clusters the key is `node-role.kubernetes.io/master` instead of `node-role.kubernetes.io/control-plane` — check the real key first with `kubectl describe node <name> | grep Taints`.
 
 **Adding a toleration to a pod:**
 ```yaml
