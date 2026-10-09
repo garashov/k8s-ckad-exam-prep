@@ -29,6 +29,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 24. [Node Selectors](#24-node-selectors)
 25. [Node Affinity](#25-node-affinity)
 26. [Taints/Tolerations + Node Affinity Combined](#26-taintstolerations--node-affinity-combined)
+27. [Multi-Container Pods](#27-multi-container-pods)
 
 ---
 
@@ -1970,5 +1971,133 @@ flowchart LR
 2. **Label** each node with its color (`kubectl label nodes node1 color=blue`) and add matching **node affinity** to the pod → prevents **your pods** from landing on **other** nodes.
 
 **Result**: taints/tolerations handle the "keep others out" half, node affinity handles the "keep mine in" half — together achieving full node dedication.
+
+---
+
+## 27. Multi-Container Pods
+
+(Builds on the short intro in [Section 3](#3-pods--basic-concepts).)
+
+### Why Multi-Container Pods
+- Microservices split a large monolith into small, independent, reusable services — each developed, deployed and scaled separately.
+- Sometimes two services must work **together**, one-to-one — e.g. a **web server paired with a main app**, or a helper alongside an app. You don't want to merge their code (they target different features), but you need **one helper instance per app instance**, scaling up and down together.
+- Solution: put both containers in the **same Pod**.
+
+### What Containers in the Same Pod Share
+
+| Shared | Benefit |
+|---|---|
+| **Lifecycle** | Created together, destroyed together |
+| **Network namespace** | Reach each other via `localhost` — no Service needed between them |
+| **Storage volumes** | Can access the same volumes — no extra volume-sharing setup |
+
+```mermaid
+flowchart LR
+    subgraph Pod
+        A[web-app container] <-->|localhost| B[main-app container]
+        V[(Shared volume)]
+        A --- V
+        B --- V
+    end
+```
+
+### Definition File
+`spec.containers` is a **list** precisely so a pod can hold several containers — just add another item:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: simple-webapp
+  labels:
+    name: simple-webapp
+spec:
+  containers:
+    - name: web-app
+      image: web-app
+      ports:
+        - containerPort: 8080
+    - name: main-app
+      image: main-app
+```
+
+### Handy Commands (specifying which container)
+When a pod has more than one container, `-c` selects the target container:
+
+| Command | Purpose |
+|---|---|
+| `kubectl get pods` | `READY` column shows `2/2` when both containers are up |
+| `kubectl logs <pod> -c <container>` | Logs of one specific container |
+| `kubectl exec -it <pod> -c <container> -- sh` | Shell into one specific container |
+
+> 📌 This basic form is the **co-located containers** pattern (first pattern below).
+
+### Design Patterns
+
+| Pattern | Defined under | Startup order | Lifetime | Typical use |
+|---|---|---|---|---|
+| **Co-located containers** | `containers` | **No order guaranteed** — all start together | Whole pod lifecycle | Two tightly dependent services |
+| **Init container** | `initContainers` | **Sequential, in listed order**; each runs to completion before the next, then the main app starts | Runs once, then **exits** | Setup/wait steps (e.g. wait for DB or API) |
+| **Sidecar container** | `initContainers` + `restartPolicy: Always` | Starts **before** the main app (in listed order) | **Keeps running** for the whole pod life; stopped after the main app ends | Log shipper, anything that must be up before the app and outlive it |
+
+**Co-located vs Sidecar** — both run for the pod's whole life. The difference is **ordering**: co-located containers are just items in an array with no startup order, while a sidecar is guaranteed to start first.
+
+#### 1. Co-located containers
+Both containers listed under `containers` (see the example above). They start together, with no startup order.
+
+#### 2. Init containers
+Defined in a separate `initContainers` list, using the same fields as normal containers. Each one runs **to completion** before the next one (and the main app) starts.
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp-pod
+spec:
+  initContainers:
+    - name: wait-for-db
+      image: busybox
+      command: ['sh', '-c', 'until nslookup db-service; do echo waiting for db; sleep 2; done']
+    - name: api-checker
+      image: busybox
+      command: ['sh', '-c', 'until nslookup api-service; do echo waiting for api; sleep 2; done']
+  containers:
+    - name: main-app
+      image: main-app
+```
+
+```mermaid
+flowchart LR
+    I1["init: wait-for-db<br/>runs, then exits"] --> I2["init: api-checker<br/>runs, then exits"] --> M["main app<br/>runs for the pod lifetime"]
+```
+
+- Multiple init containers run **one after another**, in the order listed. This is how you define a startup order.
+- While they run, `kubectl get pods` shows a status like `Init:0/2`. View an init container's logs with `kubectl logs <pod> -c <init-container>`.
+
+#### 3. Sidecar containers
+Declared as an **init container** with `restartPolicy: Always`. That makes it start before the main app but **keep running** instead of exiting.
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp-pod
+spec:
+  initContainers:
+    - name: log-shipper
+      image: filebeat
+      restartPolicy: Always
+  containers:
+    - name: main-app
+      image: main-app
+```
+
+```mermaid
+flowchart LR
+    S["sidecar starts first"] --> M["main app starts"] --> E["main app ends"] --> T["sidecar terminated"]
+```
+
+- **Example (ELK stack)**: a **Filebeat** sidecar ships logs to **Elasticsearch**, which **Kibana** visualizes. Because the sidecar starts before the app and stops after it, it captures both the **startup logs** and any **termination logs** (e.g. after a crash), which helps diagnose bugs.
+- This relies on native sidecar support in Kubernetes (beta from v1.29, GA in v1.33), so check your cluster version.
 
 ---
