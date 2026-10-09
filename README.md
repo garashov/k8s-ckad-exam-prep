@@ -30,6 +30,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 25. [Node Affinity](#25-node-affinity)
 26. [Taints/Tolerations + Node Affinity Combined](#26-taintstolerations--node-affinity-combined)
 27. [Multi-Container Pods](#27-multi-container-pods)
+28. [Observability — Readiness Probes](#28-observability--readiness-probes)
 
 ---
 
@@ -2130,5 +2131,112 @@ flowchart LR
 
 - **Example (ELK stack)**: a **Filebeat** sidecar ships logs to **Elasticsearch**, which **Kibana** visualizes. Because the sidecar starts before the app and stops after it, it captures both the **startup logs** and any **termination logs** (e.g. after a crash), which helps diagnose bugs.
 - This relies on native sidecar support in Kubernetes (beta from v1.29, GA in v1.33), so check your cluster version.
+
+---
+
+## 28. Observability — Readiness Probes
+
+The observability topics are readiness probes, liveness probes, logging and monitoring. This section covers **readiness probes**.
+
+### Recap: Pod Status vs Pod Conditions
+
+**Pod status** gives a high-level summary of where the pod is in its lifecycle (only one value at a time):
+
+```mermaid
+flowchart LR
+    A["Pending<br/>scheduler is choosing a node"] --> B["ContainerCreating<br/>images pulled, containers start"] --> C["Running<br/>until it completes or is terminated"]
+```
+
+- Stuck in `Pending` (no node found)? `kubectl describe pod <name>` shows exactly why.
+- Status is shown in `kubectl get pods`.
+
+**Pod conditions** complement the status: an array of true/false values with more detail.
+
+| Condition | Set to `True` when |
+|---|---|
+| `PodScheduled` | The pod has been scheduled onto a node |
+| `Initialized` | The pod has been initialized |
+| `ContainersReady` | All containers in the pod are ready |
+| `Ready` | The pod itself is ready, meaning the app is running and **can accept user traffic** |
+
+- View them with `kubectl describe pod <name>` (look for the **Conditions** section). The `READY` column of `kubectl get pods` also reflects it.
+
+### The Problem
+- By default, Kubernetes assumes a container is **ready as soon as it starts**, so it sets `Ready` to `True` immediately.
+- Apps take different amounts of time to be truly ready: a script takes milliseconds, a database a few seconds, a web server or Jenkins can take tens of seconds to minutes.
+- A **Service** routes traffic based on the pod's `Ready` condition, so it sends users to a pod whose app isn't running yet.
+
+### The Solution: Readiness Probe
+You define what "ready" means for your app, and Kubernetes only sets `Ready` to `True` once the **probe passes**. Until then, the Service sends **no traffic** to the pod.
+
+| Probe type | Use case | Field |
+|---|---|---|
+| **HTTP** | Web app: does the API respond? | `httpGet` (with `path` and `port`) |
+| **TCP** | Database: is the socket listening? | `tcpSocket` (with `port`) |
+| **Command** | Custom script that exits successfully when ready | `exec` (with `command` as an array) |
+
+**HTTP probe:**
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: simple-webapp
+  labels:
+    name: simple-webapp
+spec:
+  containers:
+    - name: simple-webapp
+      image: simple-webapp
+      ports:
+        - containerPort: 8080
+      readinessProbe:
+        httpGet:
+          path: /api/ready
+          port: 8080
+        initialDelaySeconds: 10
+        periodSeconds: 5
+        failureThreshold: 8
+```
+
+**TCP probe:**
+```yaml
+      readinessProbe:
+        tcpSocket:
+          port: 3306
+```
+
+**Command (exec) probe:**
+```yaml
+      readinessProbe:
+        exec:
+          command:
+            - cat
+            - /app/is_ready
+```
+
+### Extra Options
+
+| Option | Purpose | Default |
+|---|---|---|
+| `initialDelaySeconds` | Wait this long before the first probe (use when you know the app needs time to warm up) | `0` |
+| `periodSeconds` | How often to probe | `10` |
+| `failureThreshold` | Consecutive failures before the container is marked **not ready** | `3` |
+
+> 📌 The lecture says the probe "stops" after 3 failed attempts. Strictly, `failureThreshold` is the number of consecutive failures before the container is marked **not ready**; Kubernetes keeps probing, and the pod becomes ready again as soon as the probe passes.
+> 📌 A failing readiness probe only stops traffic being sent to the pod. It does **not** restart the container (that is the job of a **liveness probe**).
+
+### Why It Matters with Multiple Pods (ReplicaSet/Deployment + Service)
+Two pods are already serving users and a third pod is added, but it takes a minute to warm up.
+
+```mermaid
+flowchart LR
+    U[Users] --> S[Service]
+    S --> P1["Pod 1<br/>Ready"]
+    S --> P2["Pod 2<br/>Ready"]
+    S -. "no traffic until the probe passes" .-> P3["Pod 3 (new)<br/>not Ready"]
+```
+
+- **Without** a readiness probe: the Service sends traffic to the new pod immediately, so some users get a service disruption.
+- **With** a readiness probe: the Service keeps using only the older pods and adds the new one once it is ready, so no users are affected.
 
 ---
