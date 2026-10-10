@@ -34,6 +34,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 29. [Observability — Liveness Probes](#29-observability--liveness-probes)
 30. [Observability — Logging](#30-observability--logging)
 31. [Observability — Monitoring](#31-observability--monitoring)
+32. [Labels, Selectors & Annotations](#32-labels-selectors--annotations)
 
 ---
 
@@ -2489,5 +2490,120 @@ Handy extras (not in the lecture):
 | `kubectl top pod -n <namespace>` (or `-A`) | Pods in a namespace, or in all namespaces |
 | `kubectl top pod --sort-by=cpu` | Sort by `cpu` or `memory` to find the heaviest pods |
 | `kubectl top pod <pod> --containers` | Break usage down per container |
+
+---
+
+## 32. Labels, Selectors & Annotations
+
+### The Idea
+- **Labels** are properties attached to each item (e.g. `class: mammal`, `color: green`).
+- **Selectors** filter items by those labels, on one criterion (`color=green`) or several (green **and** a bird).
+- It's the same idea as tags on videos/blogs or filters in an online store.
+
+In Kubernetes you can end up with hundreds or thousands of objects (pods, services, ReplicaSets, Deployments). Labels let you group them by type, application or function, and selectors let you pick them out.
+
+### Labels on an Object
+Under `metadata.labels`, as key-value pairs (as many as you like):
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: simple-webapp
+  labels:
+    app: App1
+    function: Front-end
+spec:
+  containers:
+    - name: simple-webapp
+      image: simple-webapp
+```
+
+> ⚠️ Label (and annotation) **values must be strings**. Quote numbers, e.g. `version: "1.0"`, otherwise validation fails.
+
+### Selecting with `kubectl`
+
+| Command | Purpose |
+|---|---|
+| `kubectl get pods --selector app=App1` (or `-l app=App1`) | Pods matching one label |
+| `kubectl get pods -l app=App1,function=Front-end` | Pods matching **all** the listed labels (AND) |
+| `kubectl get pods --show-labels` | Show each pod's labels as a column |
+
+### How Kubernetes Uses Them Internally
+Objects are connected to each other through labels and selectors.
+
+```mermaid
+flowchart LR
+    RS["ReplicaSet<br/>selector: app=App1"] -->|"selects"| P["Pods<br/>labels: app=App1"]
+    SVC["Service<br/>selector: app=App1"] -->|"selects"| P
+```
+
+**ReplicaSet**: labels appear in **two places**, a common beginner mistake.
+```yaml
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: simple-webapp
+  labels:                 # labels of the ReplicaSet itself
+    app: App1
+    function: Front-end
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: App1           # must match the POD labels below
+  template:
+    metadata:
+      labels:             # labels on the PODS
+        app: App1
+        function: Front-end
+    spec:
+      containers:
+        - name: simple-webapp
+          image: simple-webapp
+```
+
+| Labels at... | Belong to |
+|---|---|
+| `metadata.labels` (top) | The **ReplicaSet itself** (only matter if another object needs to find the ReplicaSet) |
+| `spec.template.metadata.labels` | The **pods** it creates. The `selector` must match these |
+
+- A single label is enough if it matches correctly.
+- If other pods might share that label but do a different job, list **more than one** label in the selector so only the right pods are picked up.
+
+**Service**: works the same way, its `selector` matches the labels on the pods:
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-service
+spec:
+  selector:
+    app: App1
+  ports:
+    - port: 80
+      targetPort: 8080
+```
+
+### Annotations
+- Labels and selectors **group and select** objects. **Annotations** only **record extra information** and are not used for selecting.
+- Typical content: tool details (name, version, build information) or contact details (phone numbers, email addresses) used for integrations.
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: simple-webapp
+  labels:
+    app: App1
+    function: Front-end
+  annotations:
+    buildversion: "1.34"
+spec:
+  containers:
+    - name: simple-webapp
+      image: simple-webapp
+```
+
+> 📌 `annotations` lives **inside `metadata`**, as a sibling of `name` and `labels` (same indentation).
 
 ---
