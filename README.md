@@ -35,6 +35,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 30. [Observability — Logging](#30-observability--logging)
 31. [Observability — Monitoring](#31-observability--monitoring)
 32. [Labels, Selectors & Annotations](#32-labels-selectors--annotations)
+33. [Deployments — Updates, Rollouts & Rollbacks](#33-deployments--updates-rollouts--rollbacks)
 
 ---
 
@@ -460,7 +461,7 @@ spec:
 | `kubectl get pods` | See the auto-created Pods |
 | `kubectl get all` | See all created objects (Deployment → ReplicaSet → Pods) at once |
 
-> At this stage, Deployment behaves just like a ReplicaSet — the real value (rolling updates, rollback, pause/resume) is covered in upcoming lectures.
+> At this stage, Deployment behaves just like a ReplicaSet — the real value (rolling updates, rollback, pause/resume) is covered in [Section 33](#33-deployments--updates-rollouts--rollbacks).
 
 ---
 
@@ -2605,5 +2606,157 @@ spec:
 ```
 
 > 📌 `annotations` lives **inside `metadata`**, as a sibling of `name` and `labels` (same indentation).
+
+---
+
+## 33. Deployments — Updates, Rollouts & Rollbacks
+
+Builds on [Section 6](#6-deployments).
+
+### Rollouts and Revisions
+- Creating a Deployment triggers a **rollout**. A rollout creates a new ReplicaSet and is recorded as a **revision** (revision 1).
+- When you upgrade (e.g. a new container image version), a **new rollout** runs and a new revision is created (revision 2), and so on.
+- Revisions let you track changes and **roll back** to an earlier version.
+
+| Command | Purpose |
+|---|---|
+| `kubectl rollout status deployment/<name>` | Watch the status of a rollout |
+| `kubectl rollout history deployment/<name>` | List the revisions of a Deployment |
+
+> 📌 Only changes to the **pod template** (`spec.template`, e.g. the image or the pod labels) trigger a new rollout and revision. Scaling (changing `replicas`) does **not**.
+
+### Deployment Strategies
+
+| Strategy | Behavior | Downtime |
+|---|---|---|
+| **Recreate** | Destroy **all** old pods, then create all the new ones | **Yes**, between old pods going down and new ones coming up |
+| **RollingUpdate** (**default**) | Replace pods **one by one**: take one old pod down, bring one new pod up | No, the upgrade is seamless |
+
+```mermaid
+flowchart LR
+    subgraph Recreate
+        R1["Old RS: 5 pods"] --> R2["Old RS scaled to 0<br/>(app is DOWN)"] --> R3["New RS scaled to 5"]
+    end
+    subgraph RollingUpdate["RollingUpdate (default)"]
+        U1["Old RS: 5 pods<br/>New RS: 0 pods"] --> U2["Old RS -1, New RS +1<br/>(repeat one by one)"] --> U3["Old RS: 0 pods<br/>New RS: 5 pods"]
+    end
+```
+
+Set the strategy in the Deployment spec (if omitted, it is `RollingUpdate`):
+```yaml
+spec:
+  replicas: 5
+  strategy:
+    type: RollingUpdate     # or: Recreate
+    rollingUpdate:          # only valid with RollingUpdate (values shown are the defaults)
+      maxSurge: 25%
+      maxUnavailable: 25%
+  selector: ...
+  template: ...
+```
+- `maxSurge`: how many extra pods may exist above the desired count during the update.
+- `maxUnavailable`: how many pods may be unavailable during the update.
+
+### Updating a Deployment
+
+| Way | Command |
+|---|---|
+| Edit the definition file (image version, labels, ...), then apply | `kubectl apply -f deployment-definition.yaml` |
+| Update the image directly | `kubectl set image deployment/myapp-deployment nginx-container=nginx:1.9.1` |
+
+- Format of `set image`: `<container-name>=<new-image>`.
+- Either way, a new rollout starts and a new revision is created.
+
+> ⚠️ `kubectl set image` changes the live Deployment but **not** your definition file, so the file no longer matches the cluster. Be careful when you re-apply that file later.
+
+### What Happens Under the Hood
+- **Create**: the Deployment creates a ReplicaSet, which creates the pods.
+- **Upgrade**: the Deployment creates a **new ReplicaSet** and deploys the new pods there, while taking pods down in the **old ReplicaSet**.
+- You can see the difference with `kubectl describe deployment <name>` (Events section):
+  - **Recreate**: the old ReplicaSet is scaled down to 0 first, then the new one is scaled up to 5.
+  - **RollingUpdate**: the old ReplicaSet is scaled down one at a time while the new one is scaled up one at a time.
+- `kubectl get replicasets` after an upgrade shows the old ReplicaSet with **0 pods** and the new one with **5**.
+
+### Rolling Back
+```bash
+kubectl rollout undo deployment/<name>
+```
+- Destroys the pods in the new ReplicaSet and brings the old ones back up in the old ReplicaSet.
+- `kubectl get replicasets` before and after shows the counts **reversed**:
+
+| | Old ReplicaSet | New ReplicaSet |
+|---|---|---|
+| After upgrade (before rollback) | 0 pods | 5 pods |
+| After rollback | 5 pods | 0 pods |
+
+### Command Summary
+
+| Command | Purpose |
+|---|---|
+| `kubectl create -f deployment-definition.yaml` | Create the Deployment |
+| `kubectl get deployments` | List Deployments |
+| `kubectl apply -f deployment-definition.yaml` | Update from the definition file |
+| `kubectl set image deployment/<name> <container>=<image>` | Update the image |
+| `kubectl rollout status deployment/<name>` | Check rollout status |
+| `kubectl rollout history deployment/<name>` | Show revision history |
+| `kubectl rollout undo deployment/<name>` | Roll back to the previous revision |
+
+Handy extras (not in the lecture):
+
+| Command | Purpose |
+|---|---|
+| `kubectl rollout undo deployment/<name> --to-revision=2` | Roll back to a specific revision |
+| `kubectl rollout history deployment/<name> --revision=2` | Show the details of one revision |
+| `kubectl rollout pause deployment/<name>` / `kubectl rollout resume deployment/<name>` | Pause to batch several changes, then resume to roll them out together |
+
+### Worked Example (nginx)
+
+**Create, check the rollout, look at the history:**
+```bash
+kubectl create deployment nginx --image=nginx:1.16
+kubectl rollout status deployment nginx
+# deployment "nginx" successfully rolled out
+
+kubectl rollout history deployment nginx
+# REVISION  CHANGE-CAUSE
+# 1         <none>
+
+kubectl rollout history deployment nginx --revision=1
+# shows the pod template of revision 1 (labels, container image nginx:1.16, ...)
+```
+- `--revision=N` shows the pod template of that one revision, including its image.
+
+**Recording the change cause:** `CHANGE-CAUSE` is `<none>` by default. `--record` saves the command you ran against the revision:
+```bash
+kubectl set image deployment nginx nginx=nginx:1.17 --record
+kubectl edit deployment nginx --record
+```
+```
+REVISION  CHANGE-CAUSE
+1         <none>
+2         kubectl set image deployment nginx nginx=nginx:1.17 --record=true
+3         kubectl edit deployments. nginx --record=true
+```
+
+> ⚠️ `--record` is **deprecated**: kubectl prints `Flag --record has been deprecated, --record will be removed in the future`, although it is reported to still work. The alternative is the `kubernetes.io/change-cause` annotation. Set it right after the update and it is recorded against the current revision:
+> ```bash
+> kubectl annotate deployment nginx kubernetes.io/change-cause="upgrade to nginx 1.17"
+> ```
+
+**Undoing a change:**
+```bash
+kubectl rollout undo deployment nginx                    # back to the previous revision
+kubectl rollout undo deployment nginx --to-revision=1    # back to a specific revision
+kubectl describe deployment nginx | grep -i image:       # verify which image is live
+```
+- In the example, `undo` took the Deployment from revision 3 (`nginx:latest`) back to revision 2 (`nginx:1.17`).
+- Rolling back **re-applies the old revision as a new, latest revision number**, and the old number disappears from the history. The history then looked like:
+```
+REVISION  CHANGE-CAUSE
+1         <none>
+3         kubectl edit deployments.apps nginx --record=true
+4         kubectl set image deployment nginx nginx=nginx:1.17 --record=true
+```
+- `--to-revision=1` restored the original image (`nginx:1.16`).
 
 ---
