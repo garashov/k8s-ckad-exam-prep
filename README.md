@@ -32,6 +32,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 27. [Multi-Container Pods](#27-multi-container-pods)
 28. [Observability — Readiness Probes](#28-observability--readiness-probes)
 29. [Observability — Liveness Probes](#29-observability--liveness-probes)
+30. [Observability — Logging](#30-observability--logging)
 
 ---
 
@@ -2336,5 +2337,54 @@ They are independent and are often configured together on the same container:
 ```
 
 > 💡 To see probe failures and restarts: `kubectl get pods` (the `RESTARTS` column) and `kubectl describe pod <name>` (the Events section).
+
+---
+
+## 30. Observability — Logging
+
+### Logging in Docker
+- The app writes its events to **standard output (stdout)**.
+- Running detached (`docker run -d`) hides them, so you read them with `docker logs`.
+
+### Logging in Kubernetes
+Same idea: whatever the container writes to stdout is read with `kubectl logs`.
+
+| Action | Docker | Kubernetes |
+|---|---|---|
+| View logs | `docker logs <container-id>` | `kubectl logs <pod-name>` |
+| Stream live (follow) | `docker logs -f <container-id>` | `kubectl logs -f <pod-name>` |
+| Pod with multiple containers | n/a | `kubectl logs -f <pod-name> -c <container-name>` |
+
+### Multi-Container Pods
+Logs belong to a **specific container**, so with several containers in the pod you must say which one with `-c` (`--container`).
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: event-simulator-pod
+spec:
+  containers:
+    - name: event-simulator
+      image: kodekloud/event-simulator
+    - name: image-processor
+      image: image-processor
+```
+
+```bash
+kubectl logs -f event-simulator-pod -c event-simulator
+```
+
+> 📌 In the lecture, omitting `-c` fails and asks you to name a container. Newer kubectl versions instead default to the first container (or the one set by the `kubectl.kubernetes.io/default-container` annotation) and print a `Defaulted container ...` message. Always pass `-c` so you get the container you intend.
+
+### Handy Extras (not in the lecture, but useful for troubleshooting)
+
+| Command | Purpose |
+|---|---|
+| `kubectl logs <pod> --previous` (or `-p`) | Logs of the **previous** (crashed/restarted) container instance |
+| `kubectl logs <pod> --tail=20` | Only the last 20 lines |
+| `kubectl logs <pod> --all-containers=true` | Logs from every container in the pod |
+
+> 📌 This basic `kubectl logs` is all that is needed for the CKAD. Advanced logging setups and third-party tools are optional extras.
 
 ---
