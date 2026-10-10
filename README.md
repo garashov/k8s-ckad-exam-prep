@@ -31,6 +31,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 26. [Taints/Tolerations + Node Affinity Combined](#26-taintstolerations--node-affinity-combined)
 27. [Multi-Container Pods](#27-multi-container-pods)
 28. [Observability — Readiness Probes](#28-observability--readiness-probes)
+29. [Observability — Liveness Probes](#29-observability--liveness-probes)
 
 ---
 
@@ -2238,5 +2239,102 @@ flowchart LR
 
 - **Without** a readiness probe: the Service sends traffic to the new pod immediately, so some users get a service disruption.
 - **With** a readiness probe: the Service keeps using only the older pods and adds the new one once it is ready, so no users are affected.
+
+---
+
+## 29. Observability — Liveness Probes
+
+### The Problem
+- **Plain Docker**: if the app crashes, the container exits and **stays dead** until you manually create a new one.
+- **Kubernetes**: restarts a crashed container automatically. The `RESTARTS` count in `kubectl get pods` goes up each time.
+- **Gap**: what if the app is **stuck but the container is still alive** (e.g. a bug puts it in an infinite loop)? Kubernetes sees a running container and assumes the app is up, but users aren't being served.
+
+### The Solution: Liveness Probe
+A liveness probe **periodically tests whether the app is actually healthy**. If the test fails, the container is considered **unhealthy** and is **destroyed and recreated** (restarted). As the developer, you define what "healthy" means.
+
+```mermaid
+flowchart LR
+    A["Probe runs every periodSeconds"] -->|passes| B["Container keeps running"]
+    A -->|"fails failureThreshold times"| C["Container is killed and restarted"]
+    C --> D["RESTARTS count increases"]
+```
+
+It is configured like a readiness probe, with `livenessProbe` instead of `readinessProbe`, and the same three probe types:
+
+| Probe type | Use case | Field |
+|---|---|---|
+| **HTTP** | Web app: does the API respond? | `httpGet` (with `path` and `port`) |
+| **TCP** | Database: is the socket listening? | `tcpSocket` (with `port`) |
+| **Command** | Custom check that exits successfully when healthy | `exec` (with `command` as an array) |
+
+**HTTP probe:**
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: simple-webapp
+  labels:
+    name: simple-webapp
+spec:
+  containers:
+    - name: simple-webapp
+      image: simple-webapp
+      ports:
+        - containerPort: 8080
+      livenessProbe:
+        httpGet:
+          path: /api/healthy
+          port: 8080
+        initialDelaySeconds: 10
+        periodSeconds: 5
+        failureThreshold: 8
+```
+
+**TCP probe:**
+```yaml
+      livenessProbe:
+        tcpSocket:
+          port: 3306
+```
+
+**Command (exec) probe:**
+```yaml
+      livenessProbe:
+        exec:
+          command:
+            - cat
+            - /app/is_healthy
+```
+
+### Extra Options (same as readiness probes)
+
+| Option | Purpose | Default |
+|---|---|---|
+| `initialDelaySeconds` | Wait before the first probe | `0` |
+| `periodSeconds` | How often to probe | `10` |
+| `successThreshold` | Consecutive successes needed to count as healthy again | `1` (must be `1` for liveness probes) |
+| `failureThreshold` | Consecutive failures before the container is declared unhealthy | `3` |
+
+### Readiness vs Liveness
+
+| | Readiness probe | Liveness probe |
+|---|---|---|
+| Question | Is the app **ready to serve traffic**? | Is the app **still healthy/alive**? |
+| On failure | Pod gets **no traffic** from Services; container is **not** restarted | Container is **restarted** |
+| Field | `readinessProbe` | `livenessProbe` |
+
+They are independent and are often configured together on the same container:
+```yaml
+      readinessProbe:
+        httpGet:
+          path: /api/ready
+          port: 8080
+      livenessProbe:
+        httpGet:
+          path: /api/healthy
+          port: 8080
+```
+
+> 💡 To see probe failures and restarts: `kubectl get pods` (the `RESTARTS` column) and `kubectl describe pod <name>` (the Events section).
 
 ---
