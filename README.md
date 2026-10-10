@@ -33,6 +33,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 28. [Observability — Readiness Probes](#28-observability--readiness-probes)
 29. [Observability — Liveness Probes](#29-observability--liveness-probes)
 30. [Observability — Logging](#30-observability--logging)
+31. [Observability — Monitoring](#31-observability--monitoring)
 
 ---
 
@@ -2386,5 +2387,107 @@ kubectl logs -f event-simulator-pod -c event-simulator
 | `kubectl logs <pod> --all-containers=true` | Logs from every container in the pod |
 
 > 📌 This basic `kubectl logs` is all that is needed for the CKAD. Advanced logging setups and third-party tools are optional extras.
+
+---
+
+## 31. Observability — Monitoring
+
+### What Is Commonly Monitored
+
+| Level | Typical metrics | What people want to know |
+|---|---|---|
+| **Node** | Number of nodes; how many are healthy (`Ready`); CPU, memory, network and disk usage | Is there enough capacity? Is a node failing or overloaded? Do we need more nodes? |
+| **Pod** | Number of pods; pod status and restart counts; CPU and memory usage per pod | Which pods use the most resources? Are any crash-looping or stuck in `Pending`? Are requests/limits set sensibly? |
+| **Application** | Request rate, error rate, response latency | Are users being served well? (Usually needs app-level tools, e.g. Prometheus) |
+
+Typical questions monitoring answers:
+- Is the cluster healthy, and is there room to schedule more workloads?
+- Which node or pod is consuming the most CPU or memory?
+- Are pods restarting or failing health checks?
+- Is performance degrading over time? (This needs **historical** data.)
+
+Quick checks you already have: `kubectl get nodes` (node health), `kubectl get pods` (status and `RESTARTS`), and `kubectl top` (current CPU and memory, see below).
+
+> 📌 The metrics server covers only **current CPU and memory** of nodes and pods. It does **not** give network or disk metrics, application-level metrics, or history.
+
+### Monitoring Solutions
+
+Kubernetes has no full built-in monitoring solution, so you pick a tool. The usual options:
+
+| Solution | Type | Notes |
+|---|---|---|
+| **Metrics Server** | Open source | Lightweight, in-memory, current CPU/memory only (covered below). Replaced the older, now-deprecated **Heapster** |
+| **Prometheus** | Open source | Collects metrics into a time-series database, so you get **history**; has its own query language (PromQL) and alerting; often paired with Grafana dashboards |
+| **Elastic Stack** (Elasticsearch, Logstash, Kibana, Beats) | Open source | Mainly log collection, search and visualization (as in the Filebeat sidecar example in [Section 27](#27-multi-container-pods)) |
+| **Datadog** | Proprietary (SaaS) | Hosted monitoring platform |
+| **Dynatrace** | Proprietary (SaaS) | Hosted monitoring and observability platform |
+
+> 📌 For the CKAD, the Metrics Server and `kubectl top` are what you need. The others are good to recognize by name.
+
+### Metrics Server
+- **One metrics server per cluster.**
+- It collects metrics from every **node and pod**, aggregates them, and keeps them **in memory only**.
+- Because nothing is written to disk, there is **no historical data**. For history, use a more advanced monitoring solution (e.g. Prometheus, Datadog).
+
+### Where the Metrics Come From
+
+```mermaid
+flowchart LR
+    subgraph Node
+        P["Pods"] --> C["cAdvisor<br/>(inside the kubelet)"]
+    end
+    C -->|"exposed via the Kubelet API"| M["Metrics Server<br/>(in memory)"]
+    M --> K["kubectl top node / pod"]
+```
+
+- The **kubelet** runs on every node (it takes instructions from the API server and runs the pods).
+- Inside the kubelet is **cAdvisor** (Container Advisor). It collects performance metrics from the pods and exposes them through the **Kubelet API**, so the metrics server can read them.
+
+### Deploying the Metrics Server
+
+| Environment | How |
+|---|---|
+| **Minikube** | `minikube addons enable metrics-server` |
+| **Other clusters** | Clone the metrics-server GitHub repo and create the deployment files with `kubectl create -f` |
+
+**Method shown in the lecture:**
+```bash
+git clone https://github.com/kubernetes-sigs/metrics-server.git
+cd metrics-server
+kubectl create -f deploy/1.8+/
+```
+
+**Current method** (what the project's README documents now):
+```bash
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+```
+
+> 📌 `deploy/1.8+/` is the folder layout of older versions of the repo. The current README documents the release manifest above (or the official Helm chart) instead, so that folder may not exist in a fresh clone.
+- This deploys a set of **pods, services and roles** (in the `kube-system` namespace) so the metrics server can poll the nodes.
+- Give it a little time to collect and process data before querying.
+
+### Viewing Performance Metrics
+
+| Command | Shows |
+|---|---|
+| `kubectl top node` | CPU and memory usage of each **node** |
+| `kubectl top pod` | CPU and memory usage of each **pod** |
+
+> ⚠️ `kubectl top` **needs the metrics server**. It is only a client for the Metrics API (`metrics.k8s.io`) that the metrics server provides. Without one it fails with `error: Metrics API not available`. Quick check: `kubectl get deployment metrics-server -n kube-system`.
+
+Example output of `kubectl top node` (illustrative values):
+```
+NAME     CPU(cores)   CPU%   MEMORY(bytes)   MEMORY%
+master   166m         8%     1337Mi          68%
+```
+- CPU is shown in **millicores**: `166m` = 0.166 of a core, which was **8%** of that node's CPU in the lecture.
+
+Handy extras (not in the lecture):
+
+| Command | Purpose |
+|---|---|
+| `kubectl top pod -n <namespace>` (or `-A`) | Pods in a namespace, or in all namespaces |
+| `kubectl top pod --sort-by=cpu` | Sort by `cpu` or `memory` to find the heaviest pods |
+| `kubectl top pod <pod> --containers` | Break usage down per container |
 
 ---
