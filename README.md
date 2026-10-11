@@ -36,6 +36,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 31. [Observability — Monitoring](#31-observability--monitoring)
 32. [Labels, Selectors & Annotations](#32-labels-selectors--annotations)
 33. [Deployments — Updates, Rollouts & Rollbacks](#33-deployments--updates-rollouts--rollbacks)
+34. [Additional Deployment Strategies](#34-additional-deployment-strategies)
 
 ---
 
@@ -2758,5 +2759,105 @@ REVISION  CHANGE-CAUSE
 4         kubectl set image deployment nginx nginx=nginx:1.17 --record=true
 ```
 - `--to-revision=1` restored the original image (`nginx:1.16`).
+
+---
+
+## 34. Additional Deployment Strategies
+
+Builds on [Section 33](#33-deployments--updates-rollouts--rollbacks).
+
+- **Recreate** and **RollingUpdate** are the only options you can set in a Deployment's `strategy.type`.
+- **Blue-green** and **canary** are **not** options you can set. You build them yourself from Deployments and Services (or, better, with a service mesh like Istio, which has its own course).
+
+### Blue-Green
+
+Deploy the **new** version (green) **alongside** the **old** one (blue):
+1. 100% of the traffic still goes to **blue**.
+2. Run tests against **green**.
+3. When the tests pass, switch **all** traffic to green **at once**.
+
+```mermaid
+flowchart LR
+    U["Users"] --> S["Service<br/>selector: version=v1"]
+    S --> B["myapp (blue)<br/>pods: version=v1"]
+    G["myapp-green<br/>pods: version=v2<br/>(being tested, no traffic)"]
+    S -. "after the switch:<br/>selector version=v2" .-> G
+```
+
+**Implementation with plain Deployments and a Service.** The Service picks pods by a `version` label, so the switch is just changing the selector.
+
+**1. Blue Deployment (current version, `v1`):**
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp
+  labels:
+    app: myapp
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: myapp
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: myapp
+        version: v1
+    spec:
+      containers:
+        - name: app-container
+          image: myapp-image:1.0
+```
+
+**2. Service (sends traffic to `v1` pods):**
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp-service
+spec:
+  selector:
+    app: myapp
+    version: v1          # switch this to v2 to cut over to green
+  ports:
+    - port: 80
+      targetPort: 8080
+```
+
+**3. Green Deployment (new version, `v2`).** A separate Deployment with a new name, new image and new `version` label. It gets **no traffic yet**, so you can test it:
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp-green
+  labels:
+    app: myapp
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: myapp
+      version: v2
+  template:
+    metadata:
+      labels:
+        app: myapp
+        version: v2
+    spec:
+      containers:
+        - name: app-container
+          image: myapp-image:2.0
+```
+
+**4. Switch the traffic.** Change the Service selector from `version: v1` to `version: v2` and apply it. All traffic now goes to the pods of the green Deployment.
+
+Handy extra (not in the lecture), to switch without editing the file:
+```bash
+kubectl patch service myapp-service -p '{"spec":{"selector":{"version":"v2"}}}'
+```
+
+> 📌 The blue Deployment is still running after the switch, so rolling back is just changing the selector back to `v1`. The price is that you run **two full copies** of the app while both exist.
 
 ---
