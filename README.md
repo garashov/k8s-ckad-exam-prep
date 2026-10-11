@@ -2860,4 +2860,109 @@ kubectl patch service myapp-service -p '{"spec":{"selector":{"version":"v2"}}}'
 
 > 📌 The blue Deployment is still running after the switch, so rolling back is just changing the selector back to `v1`. The price is that you run **two full copies** of the app while both exist.
 
+### Canary
+
+Deploy the **new** version next to the old one and send only a **small percentage** of the traffic to it:
+1. Most traffic still goes to the old version (the **primary** Deployment).
+2. Test the new version (the **canary** Deployment) on that small share of traffic.
+3. If it looks good, **upgrade the primary** Deployment to the new version (e.g. with a normal rolling update) and **delete the canary** Deployment.
+
+**Implementation with plain Deployments and a Service.** Two problems to solve:
+
+| Problem | Solution |
+|---|---|
+| Send traffic from **one Service** to the pods of **both** Deployments | Give all pods a **common label** (e.g. `app: front-end`) and make the Service selector use only that label |
+| Send only a **small share** to the canary | Run only a **few canary pods** (e.g. 1). A Service spreads traffic equally across all its pods |
+
+With 5 primary pods and 1 canary pod, the Service has 6 pods: the primary gets about **83%** of the traffic and the canary about **17%**.
+
+```mermaid
+flowchart LR
+    U["Users"] --> S["Service<br/>selector: app=front-end"]
+    S -->|"~83%"| P["myapp-primary<br/>5 pods (v1)"]
+    S -->|"~17%"| C["myapp-canary<br/>1 pod (v2)"]
+```
+
+**1. Primary Deployment (5 pods, `v1`):**
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp-primary
+  labels:
+    app: myapp
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: front-end
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: front-end      # common label, used by the Service
+        version: v1
+    spec:
+      containers:
+        - name: app-container
+          image: myapp-image:1.0
+```
+
+**2. Service (selects the common label only):**
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp-service
+spec:
+  selector:
+    app: front-end
+  ports:
+    - port: 80
+      targetPort: 8080
+```
+
+**3. Canary Deployment (1 pod, new image, `v2`):**
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp-canary
+  labels:
+    app: myapp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: front-end
+      version: v2
+  template:
+    metadata:
+      labels:
+        app: front-end      # same common label, so the Service picks these pods up too
+        version: v2
+    spec:
+      containers:
+        - name: app-container
+          image: myapp-image:2.0
+```
+
+> 📌 Each Deployment's own `selector` includes the unique `version` label so the two Deployments don't overlap. Only the **Service** selects on the shared `app` label.
+
+**4. Finish:** once you trust the new version, update `myapp-primary` to the new image and remove the canary:
+```bash
+kubectl delete deployment myapp-canary
+```
+
+**Caveat**: with plain Kubernetes, the traffic split is controlled **only by the number of pods** in each Deployment. You can't say "send 1% to the canary" without about 100 pods in total. A service mesh like **Istio** lets you set the exact percentage regardless of pod count (even 1 pod each, split 1%/99%).
+
+### Strategy Summary
+
+| Strategy | How | Traffic to the new version | Downtime |
+|---|---|---|---|
+| **Recreate** | `strategy.type: Recreate` | All at once, after all old pods are destroyed | Yes |
+| **RollingUpdate** (default) | `strategy.type: RollingUpdate` | Gradually, pod by pod | No |
+| **Blue-green** | Two Deployments, switch the Service selector | None until the switch, then 100% at once | No |
+| **Canary** | Two Deployments sharing a Service label, few canary pods | A small share first (set by the pod ratio) | No |
+
 ---
