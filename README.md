@@ -2041,6 +2041,23 @@ When a pod has more than one container, `-c` selects the target container:
 
 > 📌 This basic form is the **co-located containers** pattern (first pattern below).
 
+### Creating Multi-Container Pods Imperatively
+
+`kubectl run` creates a pod with **one** container: it has a single `--image` and no per-container flags, so you can't add a second container with it. For a pod, use the usual **generate, edit, create** workflow (see [Section 10](#10-imperative-commands-exam-tip)):
+
+```bash
+kubectl run simple-webapp --image=web-app --port=8080 --dry-run=client -o yaml > pod.yaml
+# edit pod.yaml: add another item under spec.containers
+kubectl create -f pod.yaml
+```
+
+**Deployments are the exception**: `kubectl create deployment` accepts `--image` **several times**, one per container:
+```bash
+kubectl create deployment my-dep --image=web-app --image=main-app
+```
+- The flags aren't per-container, so for anything specific to one container (its own command, ports, env, ...), generate the YAML with `--dry-run=client -o yaml` and edit it.
+- There are **no flags at all** for init containers or sidecars. Always generate the YAML and add the `initContainers` section by hand (see the patterns below).
+
 ### Design Patterns
 
 | Pattern | Defined under | Startup order | Lifetime | Typical use |
