@@ -38,6 +38,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 33. [Deployments — Updates, Rollouts & Rollbacks](#33-deployments--updates-rollouts--rollbacks)
 34. [Additional Deployment Strategies](#34-additional-deployment-strategies)
 35. [Jobs](#35-jobs)
+36. [CronJobs](#36-cronjobs)
 
 ---
 
@@ -3076,5 +3077,93 @@ Handy extras (not in the lecture):
 | `backoffLimit` | Retries before the Job is marked as failed | `6` |
 | `activeDeadlineSeconds` | Maximum time the Job may run before it is stopped | none |
 | `ttlSecondsAfterFinished` | Automatically delete the Job after it finishes, after this many seconds | none |
+
+---
+
+## 36. CronJobs
+
+Builds on [Section 35](#35-jobs).
+
+A **CronJob** is a Job that runs on a **schedule**, like `crontab` in Linux. For example, a Job that generates a report and emails it: `kubectl create` would run it **once, immediately**, while a CronJob runs it **periodically**.
+
+```mermaid
+flowchart LR
+    C["CronJob<br/>(schedule)"] -->|"creates on schedule"| J["Job"] --> P["Pod(s)"]
+```
+
+### Definition File
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: reporting-cron-job
+spec:
+  schedule: "*/1 * * * *"
+  jobTemplate:
+    spec:
+      completions: 3
+      parallelism: 3
+      template:
+        spec:
+          containers:
+            - name: reporting-tool
+              image: reporting-tool
+          restartPolicy: Never
+```
+
+- `kind: CronJob` (capital **C** and **J**).
+- `spec.schedule`: a cron-style string saying when to run.
+- `spec.jobTemplate`: the actual Job to run. Its `spec` is the **content of the Job definition's `spec`** (from [Section 35](#35-jobs)).
+
+> ⚠️ The lecture says the API version is `batch/v1beta1`. That is out of date: CronJob became `batch/v1` in Kubernetes v1.21, and `batch/v1beta1` was removed in v1.25. Use `batch/v1`.
+
+### Three `spec` Sections (be careful with the nesting)
+
+| Level | Path | Holds |
+|---|---|---|
+| **CronJob** | `spec` | `schedule`, `jobTemplate` |
+| **Job** | `spec.jobTemplate.spec` | `completions`, `parallelism`, `template` |
+| **Pod** | `spec.jobTemplate.spec.template.spec` | `containers`, `restartPolicy` |
+
+### Cron Schedule Format
+
+Five fields, separated by spaces:
+
+```
+┌───────── minute (0-59)
+│ ┌─────── hour (0-23)
+│ │ ┌───── day of month (1-31)
+│ │ │ ┌─── month (1-12)
+│ │ │ │ ┌─ day of week (0-6, Sunday = 0)
+* * * * *
+```
+
+| Schedule | Meaning |
+|---|---|
+| `*/1 * * * *` | Every minute |
+| `30 21 * * *` | Every day at 21:30 |
+| `0 0 * * 0` | Every Sunday at midnight |
+
+### Commands
+
+| Command | Purpose |
+|---|---|
+| `kubectl create -f cron-job-definition.yaml` | Create the CronJob |
+| `kubectl get cronjob` (or `cj`) | List CronJobs |
+| `kubectl get jobs` / `kubectl get pods` | The Jobs and pods the CronJob creates on each run |
+
+Handy extras (not in the lecture):
+
+```bash
+kubectl create cronjob reporting-cron-job --image=reporting-tool --schedule="*/1 * * * *" --dry-run=client -o yaml
+```
+
+| Field (under `spec`) | Purpose | Default |
+|---|---|---|
+| `concurrencyPolicy` | What to do if the previous run is still going: `Allow`, `Forbid` (skip the new run) or `Replace` | `Allow` |
+| `successfulJobsHistoryLimit` | How many finished Jobs to keep | `3` |
+| `failedJobsHistoryLimit` | How many failed Jobs to keep | `1` |
+| `suspend` | Set to `true` to pause the schedule | `false` |
 
 ---
