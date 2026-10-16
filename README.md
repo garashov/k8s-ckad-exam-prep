@@ -37,6 +37,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 32. [Labels, Selectors & Annotations](#32-labels-selectors--annotations)
 33. [Deployments — Updates, Rollouts & Rollbacks](#33-deployments--updates-rollouts--rollbacks)
 34. [Additional Deployment Strategies](#34-additional-deployment-strategies)
+35. [Jobs](#35-jobs)
 
 ---
 
@@ -2964,5 +2965,116 @@ kubectl delete deployment myapp-canary
 | **RollingUpdate** (default) | `strategy.type: RollingUpdate` | Gradually, pod by pod | No |
 | **Blue-green** | Two Deployments, switch the Service selector | None until the switch, then 100% at once | No |
 | **Canary** | Two Deployments sharing a Service label, few canary pods | A small share first (set by the pod ratio) | No |
+
+---
+
+## 35. Jobs
+
+### Two Kinds of Workloads
+- **Long-running**: web servers, applications, databases. They run until you take them down.
+- **Batch**: a specific task that runs and then **finishes** (a computation, image processing, analytics on a large dataset, generating a report and emailing it).
+
+### Why a Plain Pod Isn't Enough
+- **Docker**: a container runs the task, prints the result and exits. `docker ps -a` shows it as *Exited*, with the return code in brackets (`0` = success).
+- **Kubernetes pod**: the container exits and the pod shows `Completed`, but Kubernetes **starts the container again**, over and over, until a threshold is reached. Kubernetes wants apps to live forever.
+- The cause is the pod's **`restartPolicy`**, which defaults to `Always`.
+
+| `restartPolicy` | Behavior |
+|---|---|
+| `Always` (default) | Restart the container whenever it exits |
+| `OnFailure` | Restart only if the container fails (non-zero exit) |
+| `Never` | Never restart |
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: math-pod
+spec:
+  containers:
+    - name: math-add
+      image: ubuntu
+      command: ['expr', '3', '+', '2']
+  restartPolicy: Never
+```
+
+### Job vs ReplicaSet
+- A **ReplicaSet** keeps a set number of pods running **at all times**.
+- A **Job** runs pods **to completion** to get a given task done, creating as many pods as needed and making sure the work finishes successfully.
+
+### Job Definition
+The pod's `spec` goes under `spec.template`, just like in a ReplicaSet or Deployment.
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: math-add-job
+spec:
+  template:
+    spec:
+      containers:
+        - name: math-add
+          image: ubuntu
+          command: ['expr', '3', '+', '2']
+      restartPolicy: Never
+```
+- The API version is `batch/v1` today. Verify it for your cluster version (see [Section 11](#11-kubectl-explain--api-resources): `kubectl api-resources`).
+- In a Job, the pod's `restartPolicy` must be `Never` or `OnFailure`. The default `Always` is rejected.
+
+| Command | Purpose |
+|---|---|
+| `kubectl create -f job-definition.yaml` | Create the Job |
+| `kubectl get jobs` | List Jobs (the `COMPLETIONS` column shows e.g. `1/1`) |
+| `kubectl get pods` | The Job's pod shows `Completed` with 0 restarts |
+| `kubectl logs <pod-name>` | The task's output (its standard output) |
+| `kubectl delete job <name>` | Delete the Job (**also deletes the pods** it created) |
+
+> 📌 The addition example is just to learn the idea. Real Jobs usually put their result elsewhere, e.g. a processed image on a persistent volume, or an email with a report.
+
+Handy extra (not in the lecture), generate a Job quickly:
+```bash
+kubectl create job math-add-job --image=ubuntu --dry-run=client -o yaml -- expr 3 + 2 > job.yaml
+```
+
+### Multiple Pods: `completions` and `parallelism`
+
+| Field | Meaning | Default |
+|---|---|---|
+| `completions` | How many pods must **complete successfully** | `1` |
+| `parallelism` | How many pods may run **at the same time** | `1` (one after another) |
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: random-error-job
+spec:
+  completions: 3
+  parallelism: 3
+  template:
+    spec:
+      containers:
+        - name: random-error
+          image: kodekloud/random-error
+      restartPolicy: Never
+```
+
+- **`completions: 3`** runs pods **one after another**: the next one starts only after the previous one finishes. `kubectl get jobs` then shows a desired count of 3 and a successful count of 3.
+- **If a pod fails**, the Job creates **new pods** until it reaches the required number of successful completions. In the lecture's `random-error` image (which randomly succeeds or fails), pods 1 and 3 succeed, pods 2, 4 and 5 fail, and the Job keeps going until 3 have succeeded.
+- **`parallelism: 3`** creates 3 pods **at once**. If 2 succeed and only 1 more is needed, the Job creates only the pods still required, until the total reaches 3 completed pods.
+
+```mermaid
+flowchart LR
+    J["Job<br/>completions: 3"] --> P1["Pod 1<br/>Completed"] --> P2["Pod 2<br/>Completed"] --> P3["Pod 3<br/>Completed"]
+```
+
+Handy extras (not in the lecture):
+
+| Field | Purpose | Default |
+|---|---|---|
+| `backoffLimit` | Retries before the Job is marked as failed | `6` |
+| `activeDeadlineSeconds` | Maximum time the Job may run before it is stopped | none |
+| `ttlSecondsAfterFinished` | Automatically delete the Job after it finishes, after this many seconds | none |
 
 ---
