@@ -282,6 +282,10 @@ spec:
 
 > Both this "edit → denied → use temp file" flow and the manual "get -o yaml → edit → delete → recreate" flow achieve the same result — use whichever's more convenient.
 
+**One-step shortcut**: `kubectl replace --force -f <file>` deletes the pod and recreates it from the file in a single command.
+- `kubectl replace` has **no `--now` flag** (that one belongs to `kubectl delete`). To shorten the wait, use `--grace-period=1` (what `--now` means for `delete`). `--grace-period=0` is only allowed together with `--force`, and skips the graceful shutdown, so keep it for labs.
+- Or do it in two steps: `kubectl delete pod <name> --now`, then `kubectl create -f <file>`.
+
 ### ✏️ Editing Deployments (much easier!)
 - A **Deployment** owns a pod *template*, so editing **any** field of the pod spec is allowed.
 - `kubectl edit deployment <name>` — the Deployment controller automatically deletes the old pod(s) and creates new ones matching the updated template.
@@ -2249,6 +2253,7 @@ spec:
 
 > 📌 The lecture says the probe "stops" after 3 failed attempts. Strictly, `failureThreshold` is the number of consecutive failures before the container is marked **not ready**; Kubernetes keeps probing, and the pod becomes ready again as soon as the probe passes.
 > 📌 A failing readiness probe only stops traffic being sent to the pod. It does **not** restart the container (that is the job of a **liveness probe**).
+> 📌 You **can't add or change a probe on a running Pod**: `readinessProbe` isn't an editable pod field (see [Section 4](#4-pods--yaml-definition-files)), and `kubectl set` has no probe option. Export the pod (`kubectl get pod <name> -o yaml > pod.yaml`), add the probe, then recreate it with `kubectl replace --force -f pod.yaml`. For a **Deployment**, `kubectl edit deployment <name>` works.
 
 ### Why It Matters with Multiple Pods (ReplicaSet/Deployment + Service)
 Two pods are already serving users and a third pod is added, but it takes a minute to warm up.
@@ -2548,6 +2553,12 @@ spec:
 | `kubectl get pods --selector app=App1` (or `-l app=App1`) | Pods matching one label |
 | `kubectl get pods -l app=App1,function=Front-end` | Pods matching **all** the listed labels (AND) |
 | `kubectl get pods --show-labels` | Show each pod's labels as a column |
+| `kubectl get all -l env=prod` | **All objects** (pods, services, Deployments, ReplicaSets, ...) with that label, not just pods |
+| `kubectl get all -l env=prod,bu=finance,tier=frontend` | Same, matching several labels at once (AND) |
+| `kubectl get all -l env=prod -A` | Same, across **all namespaces** |
+
+> 📌 `kubectl get all` covers the common workload types (pods, services, Deployments, ReplicaSets, Jobs, ...) but **not every resource**. ConfigMaps, Secrets and PersistentVolumeClaims, for example, are not included. Only the current namespace is searched unless you add `-A`.
+> 📌 `k` is a common shell alias for `kubectl`, so `k get all -l env=prod` works if you have it set up.
 
 ### How Kubernetes Uses Them Internally
 Objects are connected to each other through labels and selectors.
