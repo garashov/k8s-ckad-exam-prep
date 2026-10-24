@@ -39,6 +39,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 34. [Additional Deployment Strategies](#34-additional-deployment-strategies)
 35. [Jobs](#35-jobs)
 36. [CronJobs](#36-cronjobs)
+37. [Network Policies](#37-network-policies)
 
 ---
 
@@ -3193,5 +3194,481 @@ kubectl create cronjob reporting-cron-job --image=reporting-tool --schedule="*/1
 | `successfulJobsHistoryLimit` | How many finished Jobs to keep | `3` |
 | `failedJobsHistoryLimit` | How many failed Jobs to keep | `1` |
 | `suspend` | Set to `true` to pause the schedule | `false` |
+
+---
+
+## 37. Network Policies
+
+### Ingress vs Egress (networking basics)
+- **Ingress** = traffic **coming in** to a server. **Egress** = traffic **going out** from it.
+- You only look at the **direction in which the traffic originated**. The response going back (e.g. the reply to the user) doesn't count.
+
+Example: a web server, an API server and a database.
+
+```mermaid
+flowchart LR
+    U["Users"] -->|":80"| W["Web server"]
+    W -->|":5000"| A["API server"]
+    A -->|":3306"| D["Database server"]
+```
+
+| Server | Ingress rule | Egress rule |
+|---|---|---|
+| **Web** | Accept HTTP on port **80** (from users) | Allow traffic to the API server on port **5000** |
+| **API** | Accept traffic on port **5000** (from the web server) | Allow traffic to the database on port **3306** |
+| **Database** | Accept traffic on port **3306** (from the API server) | none needed |
+
+### Kubernetes Default: Allow All
+- Pods get IPs on a virtual network spanning all nodes and can reach each other by **IP, pod name or Service name**, with no extra routes. This is a requirement of the cluster's network solution.
+- By default Kubernetes has an **all-allow** rule: **any pod can talk to any other pod or Service** in the cluster.
+- So the web pod can reach the database pod directly. If security requires that to be blocked, use a **NetworkPolicy**.
+
+### NetworkPolicy
+- A **namespaced object**, like pods, ReplicaSets or Services.
+- It is linked to pods with **labels and selectors** (`podSelector`) and only affects the pods it selects.
+- Once a policy selects a pod, it **blocks all other traffic** of the listed `policyTypes` to that pod and allows only what its rules match.
+
+Goal: only the API pod may reach the DB pod, on port 3306.
+
+**Label the DB pod** (so the policy can select it):
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: db
+  labels:
+    role: db
+spec:
+  containers:
+    - name: mysql
+      image: mysql
+```
+
+**The policy:**
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: db-policy
+spec:
+  podSelector:              # which pods the policy applies to (the DB pod)
+    matchLabels:
+      role: db
+  policyTypes:
+    - Ingress               # Ingress, Egress, or both
+  ingress:
+    - from:
+        - podSelector:      # who may connect (the API pod)
+            matchLabels:
+              name: api-pod
+      ports:
+        - protocol: TCP
+          port: 3306
+```
+
+```mermaid
+flowchart LR
+    A["API pod<br/>name=api-pod"] -->|"allowed :3306"| D["DB pod<br/>role=db<br/>(db-policy)"]
+    W["Web pod"] -. "blocked by db-policy" .-> D
+```
+
+| Part | Purpose |
+|---|---|
+| `spec.podSelector` | The pods the policy protects |
+| `policyTypes` | `Ingress`, `Egress`, or both. Only the listed directions are restricted |
+| `ingress[].from` | Who is allowed to send traffic in (selected by labels) |
+| `ingress[].ports` | Which port(s) they may use |
+
+> ⚠️ The lecture says the API version is `networking.io/v1`. The correct value is `networking.k8s.io/v1`.
+
+| Command | Purpose |
+|---|---|
+| `kubectl create -f policy-definition.yaml` | Create the policy |
+| `kubectl get networkpolicy` (or `netpol`) | List policies |
+| `kubectl describe networkpolicy db-policy` | Show what a policy selects and allows |
+
+### Walkthrough: Building the DB Policy Step by Step
+
+Requirement: protect the **DB pod** so only the **API pod** can reach it, on port **3306**. The web and API pods are unrestricted.
+
+1. **Select the DB pod** with `podSelector.matchLabels` (`role: db`). Traffic of the listed policy types to that pod is now blocked unless a rule allows it.
+2. **Pick the policy type from the DB pod's point of view.** The API pod's request comes **in** to the DB, so that's **Ingress**.
+   - The **reply** to an allowed request goes back **automatically**. You don't need a rule for it.
+   - Only consider the direction in which the request **originates**.
+   - A single policy can have `Ingress`, `Egress` or **both**.
+3. **Add the `ingress` rule**: `from` (who may connect) and `ports` (TCP 3306 on the DB pod).
+
+### The Three Selectors (used under `from` and `to`)
+
+| Selector | Selects | Notes |
+|---|---|---|
+| `podSelector` | Pods by label | |
+| `namespaceSelector` | **Namespaces** by label | The namespace must **already have that label** |
+| `ipBlock` | An **IP range (CIDR)** | For sources/destinations **outside the cluster**, e.g. a backup server. Pod and namespace selectors can't match those |
+
+**Setup used in all the examples below:**
+- The **DB pod** (label `role: db`) and the policy are in the `default` namespace.
+- The **API pods** (label `name: api-pod`) run in the `prod` namespace.
+- The `prod` namespace has the label `name: prod`:
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: prod
+  labels:
+    name: prod
+```
+(or label an existing namespace: `kubectl label namespace prod name=prod`)
+
+> 💡 Every namespace also gets the label `kubernetes.io/metadata.name: <namespace-name>` automatically, so you can select by that without labeling anything yourself.
+
+> ⚠️ The lecture says a bare `podSelector` would allow matching pods from **any namespace**. According to the Kubernetes docs, a `podSelector` on its own selects pods in the **same namespace as the NetworkPolicy**. Add a `namespaceSelector` to reach pods in other namespaces.
+
+**1. `podSelector` + `namespaceSelector` together.** Only API pods that are **in the `prod` namespace** may reach the DB pod:
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: db-policy
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      role: db
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              name: api-pod
+          namespaceSelector:
+            matchLabels:
+              name: prod
+      ports:
+        - protocol: TCP
+          port: 3306
+```
+
+**2. `namespaceSelector` alone.** **Every pod** in the `prod` namespace may reach the DB pod (the web pod too), and pods from other namespaces may not:
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: db-policy
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      role: db
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: prod
+      ports:
+        - protocol: TCP
+          port: 3306
+```
+
+**3. `ipBlock`.** Only the external backup server may reach the DB pod:
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: db-policy
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      role: db
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 192.168.5.1/32
+      ports:
+        - protocol: TCP
+          port: 3306
+```
+
+### Combining Selectors: AND vs OR
+
+| Layout | Meaning |
+|---|---|
+| Selectors in the **same** list item (no extra dash) | **AND**: the source must match **all** of them |
+| Selectors in **separate** list items (each starts with `-`) | **OR**: matching **any** one is enough |
+
+**Example A: AND + OR.** Two rules in `from`. Rule 1 needs **both** selectors, rule 2 is an **alternative**:
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: db-policy
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      role: db
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:            # rule 1: api-pod pods AND in the prod namespace
+            matchLabels:
+              name: api-pod
+          namespaceSelector:
+            matchLabels:
+              name: prod
+        - ipBlock:                # rule 2 (OR): the backup server
+            cidr: 192.168.5.1/32
+      ports:
+        - protocol: TCP
+          port: 3306
+```
+Allowed sources: (an `api-pod` in `prod`) **OR** (the backup server).
+
+**Example B: one extra dash changes everything.** The only change from Example A is a `-` in front of `namespaceSelector`. It now becomes its own rule:
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: db-policy
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      role: db
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:            # rule 1: api-pod pods in the policy's own namespace (default)
+            matchLabels:
+              name: api-pod
+        - namespaceSelector:      # rule 2: ANY pod in the prod namespace
+            matchLabels:
+              name: prod
+        - ipBlock:                # rule 3: the backup server
+            cidr: 192.168.5.1/32
+      ports:
+        - protocol: TCP
+          port: 3306
+```
+Now there are **three separate rules**, so traffic from far more sources is allowed (any pod in `prod`, not just API pods). A small indentation change has a big security impact, so check the dashes.
+
+### Egress Rules
+
+Use egress when the **DB pod itself starts** the connection. For example, an agent on the DB pod pushes backups to an external backup server.
+
+- Add `Egress` to `policyTypes`.
+- Add an `egress` section. It is the same as `ingress` but uses **`to`** instead of `from`.
+- Under `to` you can use any of the same selectors (`podSelector`, `namespaceSelector`, `ipBlock`).
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: db-policy
+spec:
+  podSelector:
+    matchLabels:
+      role: db
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              name: api-pod
+      ports:
+        - protocol: TCP
+          port: 3306
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 192.168.5.1/32
+      ports:
+        - protocol: TCP
+          port: 80
+```
+
+| Direction | Section | Source/destination field | Allows traffic that... |
+|---|---|---|---|
+| Ingress | `ingress` | `from` | comes **into** the selected pod |
+| Egress | `egress` | `to` | goes **out of** the selected pod |
+
+> 📌 Once `Egress` is in `policyTypes`, **only** the egress traffic you list is allowed from that pod. Everything else is blocked, including DNS lookups, so you need to allow those too. See the [section below](#restricting-egress-to-specific-services-and-allowing-dns).
+
+### Restricting Egress to Specific Services (and Allowing DNS)
+
+A very common real-world requirement: an `internal` app may talk **only** to the `payroll` and `db` services and nothing else. Locking down egress like this has one trap: you must **also allow DNS**, otherwise the app can no longer resolve those service names.
+
+#### Why a restricted egress breaks DNS
+
+How a pod reaches a Service by name:
+
+```mermaid
+flowchart LR
+    I["internal pod<br/>(egress restricted)"] -->|"1. DNS query, port 53 (UDP/TCP)"| D["CoreDNS pods<br/>namespace: kube-system<br/>label: k8s-app=kube-dns"]
+    I -->|"2. connect, e.g. port 8080"| P["payroll pods"]
+    I -->|"3. connect, e.g. port 3306"| M["db pods"]
+```
+
+- The pod's `/etc/resolv.conf` points to the cluster DNS Service (`kube-dns` in `kube-system`), which forwards to the **CoreDNS pods**.
+- Before every connection by name (`payroll-service`), the app first sends a **DNS query to CoreDNS**. That query is **egress traffic from the pod** too.
+- Once egress is restricted, **only the destinations you list are allowed**. If CoreDNS is not listed, step 1 is blocked, names stop resolving, and connections by name fail **even to destinations you allowed**. (Connecting by IP would still work.)
+- DNS uses port **53**: **UDP** normally, and **TCP** for large answers and fallback. Allow **both**.
+
+**Solution: always add a DNS egress rule** next to your application rules.
+
+#### Policies select pods, not Services
+
+A NetworkPolicy **cannot select a Service**. For each destination "service" you write the rule in terms of its **backing pods**:
+- the **labels** of those pods (for `podSelector`)
+- the port the **pod listens on** (`targetPort`), **not** the Service's own `port`
+
+#### Finding the right values
+
+**Destination pods (the `payroll` and `db` services):**
+```bash
+kubectl get pods --show-labels         # labels of every pod
+kubectl describe svc payroll-service   # read the Selector and TargetPort lines
+kubectl describe svc db-service
+```
+
+| `describe svc` shows | Use it in the policy as |
+|---|---|
+| `Selector: name=payroll` | `podSelector.matchLabels: name: payroll` |
+| `TargetPort: 8080/TCP` | `ports: - port: 8080` |
+| `Port: 80/TCP` (the Service port) | not used |
+
+**DNS (CoreDNS):** the DNS rule needs the **namespace label** and the **pod label** of CoreDNS. Read them from the cluster instead of guessing:
+```bash
+# 1. Labels of the kube-system namespace
+kubectl get ns kube-system --show-labels
+# NAME          STATUS   AGE   LABELS
+# kube-system   Active   10d   kubernetes.io/metadata.name=kube-system
+
+# 2. Labels of the CoreDNS pods
+kubectl get pods -n kube-system --show-labels
+# coredns-xxxxx   1/1   Running   ...   k8s-app=kube-dns,pod-template-hash=...
+
+# 3. Confirm your selector matches them
+kubectl get pods -n kube-system -l k8s-app=kube-dns
+```
+
+| YAML field | Value | Where it comes from |
+|---|---|---|
+| `namespaceSelector.matchLabels` | `kubernetes.io/metadata.name: kube-system` | `LABELS` column of `kubectl get ns kube-system --show-labels` |
+| `podSelector.matchLabels` | `k8s-app: kube-dns` | `LABELS` column of `kubectl get pods -n kube-system --show-labels` (the `coredns` pods) |
+
+- Pick a **stable** label such as `k8s-app=kube-dns`, not `pod-template-hash`, which changes with every rollout.
+- The CoreDNS pods keep the old `kube-dns` label (and the Service is still named `kube-dns`) for compatibility. See it with `kubectl get svc -n kube-system`.
+- Other clusters may use different labels, so always check.
+
+#### The complete policy
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: internal-policy
+spec:
+  podSelector:                  # the pod being restricted
+    matchLabels:
+      name: internal
+  policyTypes:
+    - Egress
+  egress:
+    - to:                       # rule 1: the database pods
+        - podSelector:
+            matchLabels:
+              name: mysql
+      ports:
+        - protocol: TCP
+          port: 3306
+    - to:                       # rule 2: the payroll pods
+        - podSelector:
+            matchLabels:
+              name: payroll
+      ports:
+        - protocol: TCP
+          port: 8080
+    - to:                       # rule 3: DNS (CoreDNS in kube-system)
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+```
+
+Why it is written this way:
+- **One rule per destination**, each with its own `ports`. The `ports` of a rule apply to **every** `to` entry in that rule, so merging the mysql and payroll pods into one rule with ports `3306` and `8080` would allow both ports to both pods.
+- In rule 3, `namespaceSelector` and `podSelector` are in the **same** list item, so it is an **AND**: pods labeled `k8s-app=kube-dns` **in** `kube-system`. With an extra dash they would become an OR and allow far more (see *Combining Selectors* above).
+- The `name: mysql` and `name: payroll` labels are examples. Read your real ones as shown above.
+
+**Simpler (looser) DNS alternative**: a rule with only `ports` and no `to` allows port 53 to **any** destination:
+```yaml
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+```
+
+#### Ingress (what happens to incoming traffic)
+
+The policy above lists only `Egress` in `policyTypes`, so **ingress is not affected** and stays open: other pods and users can still reach the `internal` pod.
+
+If your policy lists `Ingress` too, ingress is **denied by default** unless a rule allows it. To allow all ingress:
+```yaml
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - {}                        # one empty rule = allow all ingress
+```
+
+> 📌 Always list `policyTypes` explicitly. If you omit it, Kubernetes always assumes `Ingress`, and also `Egress` only if the policy has an `egress` section.
+
+#### Verify it
+
+```bash
+kubectl exec -it internal -- sh
+# inside the pod (if the image has these tools):
+nslookup payroll-service        # DNS works?
+nc -zv payroll-service 8080     # allowed destination reachable?
+nc -zv some-other-service 80    # should be blocked (times out)
+```
+
+#### Common Mistakes
+
+| Mistake | Fix |
+|---|---|
+| Trying to select a **Service** | Select its **pods**: use the Service's `Selector` labels |
+| Using the **Service port** | Use the pod's **`targetPort`** |
+| Forgetting **DNS** | Allow UDP **and** TCP 53 to CoreDNS, or names won't resolve |
+| Guessing the CoreDNS/namespace labels | Read them with `kubectl get ns kube-system --show-labels` and `kubectl get pods -n kube-system --show-labels` |
+| Two `to` entries sharing one `ports` list | One rule (`- to` + `ports`) per destination |
+| `Ingress` in `policyTypes` with no ingress rule | Add `ingress: - {}` or leave `Ingress` out |
+
+### Enforcement Depends on the Network Solution (CNI)
+- Network policies are **enforced by the cluster's network solution**, not by Kubernetes itself.
+- Solutions that **support** them: **Kube-router, Calico, Romana, Weave Net** (and Cilium).
+- **Flannel** did not support network policies at the time of the lecture. Always check your network solution's documentation.
+
+> ⚠️ On a solution that doesn't support them, you can still create network policies **without any error**, but they are **not enforced**. A policy that "isn't working" may simply not be supported.
 
 ---
