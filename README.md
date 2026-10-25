@@ -40,6 +40,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 35. [Jobs](#35-jobs)
 36. [CronJobs](#36-cronjobs)
 37. [Network Policies](#37-network-policies)
+38. [Ingress](#38-ingress)
 
 ---
 
@@ -3670,5 +3671,402 @@ nc -zv some-other-service 80    # should be blocked (times out)
 - **Flannel** did not support network policies at the time of the lecture. Always check your network solution's documentation.
 
 > ⚠️ On a solution that doesn't support them, you can still create network policies **without any error**, but they are **not enforced**. A policy that "isn't working" may simply not be supported.
+
+---
+
+## 38. Ingress
+
+### Why Ingress? (Services vs Ingress)
+
+How exposing an online store grows without Ingress:
+
+| Need | Without Ingress |
+|---|---|
+| App talks to its database | `ClusterIP` Service (`mysql-service`) |
+| Reach the app from outside | `NodePort` Service (high port, e.g. `30080`): `http://<node-ip>:30080` |
+| No IP address or port in the URL | DNS pointing to the nodes **plus** a proxy in front, forwarding port 80 to `30080` |
+| On a public cloud | `LoadBalancer` Service: Kubernetes also provisions a **cloud load balancer** with an external IP |
+| A second app (e.g. video streaming) on the same domain | Another `LoadBalancer` (**another paid load balancer**) **plus** yet another proxy to route by URL, reconfigured for every new service |
+| HTTPS/SSL | Implemented in each app, or on the load balancer or proxy, in different places and ways |
+
+**Ingress** solves this inside the cluster, as ordinary Kubernetes objects (YAML files you keep with the rest of your deployment files):
+- **One externally accessible URL** that routes to different Services by **URL path** or **host name**.
+- **SSL** configured in one place.
+- Think of it as a **layer 7 (HTTP) load balancer built into the cluster**.
+
+> 📌 You still have to **expose the Ingress controller itself** outside the cluster (a `NodePort` Service or a cloud load balancer). That is a **one-time** setup. After that, all routing and SSL rules live in Ingress resources.
+
+### The Overall Flow
+
+Two kinds of work, done at different times, by different people:
+
+```mermaid
+flowchart TB
+    subgraph Setup["One-time setup (cluster infrastructure team, done once)"]
+        SA["ServiceAccount + ClusterRole +<br/> ClusterRoleBinding - permission<br/>to watch <br/> Ingress/Service/Endpoint<br/>objects cluster-wide"]
+        CM["ConfigMap<br/>global nginx settings"]
+        IC["Ingress controller (Deployment)<br/>runs nginx-ingress-controller,<br/>uses the ServiceAccount <br/> and ConfigMap"]
+        SVC["Service (NodePort/LoadBalancer)<br/>exposes the controller<br/>outside the cluster"]
+        SA --> IC
+        CM --> IC
+        IC --> SVC
+    end
+    subgraph PerApp["Per application (app team, repeated for every app)"]
+        D["Deployment<br/>the app's pods"]
+        S["Service (ClusterIP)<br/>exposes the app inside the cluster"]
+        I["Ingress resource (any namespace)<br/>rules pointing at that Service"]
+        D --> S --> I
+    end
+    I -.->|"watched by"| IC
+```
+
+1. **One-time setup**: deploy the controller once per cluster (ServiceAccount, ConfigMap, Deployment, Service). This is infrastructure, usually done by a platform/cluster admin, not repeated per app.
+2. **Per application**: for every new app, you only add three ordinary objects — a Deployment, a (`ClusterIP`) Service, and an Ingress resource pointing at that Service. The already-running controller **watches for new Ingress resources** and reconfigures itself automatically. No new load balancer, no new proxy rule to hand-configure.
+
+### Two Parts: Controller and Resources
+
+| Part | What it is |
+|---|---|
+| **Ingress controller** | The solution you **deploy** (a reverse proxy/load balancer such as nginx, HAProxy or Traefik, plus extra logic that **watches the cluster for Ingress resources** and configures itself) |
+| **Ingress resources** | The **rules** you define in YAML files (routes, hosts, paths) |
+
+> ⚠️ A cluster has **no Ingress controller by default**. If you create Ingress resources without a controller, **nothing happens**.
+
+Controller options: GCE (Google's layer 7 HTTP load balancer), nginx, Contour, HAProxy, Traefik, Istio.
+
+> 📌 The nginx controller developed by the Kubernetes project (**Ingress NGINX**) was **retired in March 2026**: no more releases, bug fixes or security fixes. Existing installs keep working. The Kubernetes project recommends migrating to **Gateway API** (the newer replacement for Ingress) or another Ingress controller. The Ingress API itself is still available.
+
+### Step 1 — One-Time Setup: Deploying the Controller
+
+Four pieces, deployed once per cluster:
+
+| Component | Purpose |
+|---|---|
+| **ServiceAccount** + **ClusterRole** + **ClusterRoleBinding** | Permissions the controller needs to **watch Ingress, Service and Endpoint objects across the cluster** and react when they change (see [Section 22](#22-service-accounts)) |
+| **ConfigMap** | Global nginx settings (log path, keep-alive threshold, SSL settings, session timeout), **decoupled from the image**. Can be **empty** at first; add settings later without touching nginx config files |
+| **Deployment** | Runs the controller itself (a special nginx build made for this job) |
+| **Service** (`NodePort` or `LoadBalancer`) | Exposes the controller to the outside world — this is the **one entry point** for all apps behind it |
+
+**ServiceAccount** (plus the matching ClusterRole/ClusterRoleBinding, not shown — see [Section 22](#22-service-accounts)):
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nginx-ingress-serviceaccount
+```
+
+**ConfigMap** (can be empty):
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-configuration
+```
+
+**Deployment** (as in the lecture; for a real cluster use the current image/version of your chosen controller):
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-ingress-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: nginx-ingress
+  template:
+    metadata:
+      labels:
+        name: nginx-ingress
+    spec:
+      serviceAccountName: nginx-ingress-serviceaccount
+      containers:
+        - name: nginx-ingress-controller
+          image: quay.io/kubernetes-ingress-controller/nginx-ingress-controller:0.21.0   # image used in the lecture (old version)
+          args:
+            - /nginx-ingress-controller          # the program inside the image
+            - --configmap=$(POD_NAMESPACE)/nginx-configuration
+            - --default-backend-service=$(POD_NAMESPACE)/default-backend-service
+          env:
+            - name: POD_NAME                     # the controller reads its own pod name...
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE                # ...and namespace
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - name: http
+              containerPort: 80
+            - name: https
+              containerPort: 443
+```
+
+**Why `--default-backend-service` is passed here:** if a request doesn't match **any** rule in **any** Ingress resource on the cluster, nginx needs **something** to send it to instead of just failing. This flag tells the controller which Service to use as that catch-all (typically one that returns a friendly 404 page). You deploy that Service yourself (see *Default Backend* further down) — this flag just tells the controller where to find it. Without it, an unmatched request gets nginx's own bare default page/error instead of your app's 404 page.
+
+**Service** (selector links it to the Deployment's pods):
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-ingress
+spec:
+  type: NodePort
+  ports:
+    - port: 80
+      targetPort: 80
+      protocol: TCP
+      name: http
+    - port: 443
+      targetPort: 443
+      protocol: TCP
+      name: https
+  selector:
+    name: nginx-ingress
+```
+
+> 💡 In practice you normally install a controller from its **official manifests or Helm chart** rather than writing these files by hand.
+
+### Step 2 — Per Application: Deploy, Expose, Route
+
+Once the controller is running, adding a new app is just three ordinary objects, same as any app without Ingress:
+
+1. **Deploy your app** — a normal Deployment.
+2. **Expose it internally** — a `ClusterIP` Service.
+3. **Create an Ingress resource** (in any namespace) pointing at that Service.
+
+No new load balancer, no new proxy config — the controller notices the new Ingress resource and routes accordingly.
+
+### Ingress Resources
+
+An Ingress resource is a **set of rules** applied to the controller. Traffic is routed to **Services**, never directly to pods.
+
+> ⚠️ The lecture says the API version is `networking.io/v1`. The correct value is `networking.k8s.io/v1`.
+
+**1. Single backend** (send all traffic to one Service, no rules):
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress-wear
+spec:
+  defaultBackend:
+    service:
+      name: wear-service
+      port:
+        number: 80
+```
+
+**2. Split by URL path** (one rule for one domain, several paths):
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress-wear-watch
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /wear
+            pathType: Prefix
+            backend:
+              service:
+                name: wear-service
+                port:
+                  number: 80
+          - path: /watch
+            pathType: Prefix
+            backend:
+              service:
+                name: watch-service
+                port:
+                  number: 80
+```
+
+**3. Split by host name** (one rule per domain, a path in each):
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress-wear-watch
+spec:
+  rules:
+    - host: wear.my-online-store.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: wear-service
+                port:
+                  number: 80
+    - host: watch.my-online-store.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: watch-service
+                port:
+                  number: 80
+```
+
+| Splitting by... | Structure |
+|---|---|
+| **URL path** | **One rule**, several `paths` |
+| **Host name** | **One rule per `host`**, usually one path each (each host rule can also have several paths) |
+
+- A rule **without `host`** matches traffic for **any** host.
+- To make several domain names reach the cluster, add multiple DNS entries all pointing to the **same Ingress controller Service**.
+
+**`pathType`** is **required** on every path in `networking.k8s.io/v1`:
+
+| `pathType` | Matches |
+|---|---|
+| `Prefix` | The path and everything below it, e.g. `/wear` matches `/wear` and `/wear/shirts` |
+| `Exact` | Only exactly that path |
+| `ImplementationSpecific` | Decided by the ingress controller |
+
+### IngressClass — Why It's Needed
+
+A cluster can have **more than one Ingress controller** installed (e.g. nginx for some apps, a cloud load balancer controller for others). `IngressClass` says **which controller** a given Ingress resource is meant for, so the right controller picks it up and ignores the rest.
+
+**1. The controller registers an `IngressClass` for itself** (usually done once, as part of installing the controller):
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+  name: nginx
+spec:
+  controller: k8s.io/ingress-nginx
+```
+
+**2. Each Ingress resource picks one** with `ingressClassName`:
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress-wear
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /wear
+            pathType: Prefix
+            backend:
+              service:
+                name: wear-service
+                port:
+                  number: 80
+```
+
+- With only **one** controller in the cluster, you can often omit `ingressClassName` and it still works, but setting it explicitly avoids ambiguity and is required once there is more than one controller.
+- List what's available with `kubectl get ingressclass` (see *Checking Everything Is Working* below).
+
+### Annotations — `rewrite-target` Example
+
+Ingress controllers (nginx in particular) support extra behavior through **annotations** on the Ingress resource, since these controller-specific options don't fit the generic Ingress spec.
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: critical-ingress
+  namespace: critical-space
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /pay
+            pathType: Prefix
+            backend:
+              service:
+                name: pay-service
+                port:
+                  number: 8080
+```
+
+**Why it's needed**: your app's Service often doesn't know or care about the URL prefix used to reach it from outside. The app behind `pay-service` serves requests at `/`, not at `/pay`. Without a rewrite, nginx forwards the full path `/pay` to the backend, which doesn't recognize it and returns a 404. `rewrite-target: /` tells nginx to **strip the matched path and replace it with `/`** before forwarding, so `/pay/invoices` reaches the backend as `/invoices`.
+
+- Use this whenever your Ingress path (e.g. `/pay`, `/wear`) is just a **routing prefix** added by Ingress, and the backend app itself was built to serve from `/`.
+- If the backend app is already aware of and expects the `/pay` prefix, you don't need a rewrite.
+
+### Default Backend (unmatched URLs)
+
+If a request matches **none** of the rules, it goes to the **default backend**. You must provide that Service yourself (for example one that serves a friendly **404 Not Found** page), e.g. for a user visiting `/listen` or `/eat` when you have no such service.
+
+```yaml
+spec:
+  defaultBackend:
+    service:
+      name: default-http-backend
+      port:
+        number: 80
+  rules:
+    - http:
+        paths:
+          - path: /wear
+            pathType: Prefix
+            backend:
+              service:
+                name: wear-service
+                port:
+                  number: 80
+```
+
+This per-Ingress `defaultBackend` only applies to **that one Ingress resource**. The controller-level `--default-backend-service` flag (Step 1 above) is the **fallback for the whole controller** when a request doesn't match any Ingress resource at all.
+
+### Checking Everything Is Working
+
+| Command | Shows |
+|---|---|
+| `kubectl get ingress -A` | Ingress resources in every namespace (name, class, hosts, address, ports) |
+| `kubectl get ingressclass -A` | Registered `IngressClass` objects and which controller each maps to |
+| `kubectl get pods -A` | All pods — look for the controller's pod among them |
+| `kubectl get pods -A \| grep -iE 'nginx\|traefik\|haproxy\|contour\|kong\|envoy'` | Quickly spot a running ingress controller pod by common names |
+| `kubectl describe ingress <name> -n <namespace>` | Rules, backends (path → Service), and the **Default backend** for one Ingress |
+
+Example output:
+```
+$ kubectl get ingress -A
+NAMESPACE   NAME                 CLASS    HOSTS   ADDRESS   PORTS   AGE
+app-space   ingress-wear-watch   <none>   *                 80      13m
+
+$ kubectl get ingressclass -A
+NAME    CONTROLLER             PARAMETERS   AGE
+nginx   k8s.io/ingress-nginx   <none>       14m
+```
+
+### Commands
+
+| Command | Purpose |
+|---|---|
+| `kubectl create -f ingress.yaml` | Create the Ingress resource |
+| `kubectl get ingress` (or `ing`) | List Ingress resources |
+| `kubectl describe ingress <name>` | Show the rules, the backends (path to Service), and the **Default backend** |
+
+### Creating an Ingress Imperatively (k8s 1.20+)
+
+Format: `kubectl create ingress <ingress-name> --rule="host/path=service:port"`
+
+```bash
+# a single host and path
+kubectl create ingress ingress-test --rule="wear.my-online-store.com/wear*=wear-service:80"
+
+# multiple paths, same host (repeat --rule)
+kubectl create ingress ingress-wear-watch \
+  --rule="/wear*=wear-service:80" \
+  --rule="/watch*=watch-service:80" \
+  --dry-run=client -o yaml
+```
+- `host` is optional in a rule (`/wear*=wear-service:80` matches any host).
+- A path ending in `*` gets `pathType: Prefix`; without it, `pathType: Exact`.
+- Other flags: `--default-backend=svc:port`, `--class=<ingress-class>`, `--annotation <key>=<value>`.
 
 ---
