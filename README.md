@@ -3703,10 +3703,10 @@ Two kinds of work, done at different times, by different people:
 ```mermaid
 flowchart TB
     subgraph Setup["One-time setup (cluster infrastructure team, done once)"]
-        SA["ServiceAccount + ClusterRole +<br/> ClusterRoleBinding - permission<br/>to watch <br/> Ingress/Service/Endpoint<br/>objects cluster-wide"]
+        SA["ServiceAccount + ClusterRole + ClusterRoleBinding<br/>permission to watch Ingress/Service/Endpoint objects cluster-wide"]
         CM["ConfigMap<br/>global nginx settings"]
-        IC["Ingress controller (Deployment)<br/>runs nginx-ingress-controller,<br/>uses the ServiceAccount <br/> and ConfigMap"]
-        SVC["Service (NodePort/LoadBalancer)<br/>exposes the controller<br/>outside the cluster"]
+        IC["Ingress controller (Deployment)<br/>runs nginx-ingress-controller,<br/>uses the ServiceAccount and ConfigMap"]
+        SVC["Service (NodePort/LoadBalancer)<br/>exposes the controller outside the cluster"]
         SA --> IC
         CM --> IC
         IC --> SVC
@@ -3994,6 +3994,44 @@ spec:
 
 **Why it's needed**: your app's Service often doesn't know or care about the URL prefix used to reach it from outside. The app behind `pay-service` serves requests at `/`, not at `/pay`. Without a rewrite, nginx forwards the full path `/pay` to the backend, which doesn't recognize it and returns a 404. `rewrite-target: /` tells nginx to **strip the matched path and replace it with `/`** before forwarding, so `/pay/invoices` reaches the backend as `/invoices`.
 
+**How it works — it's a search-and-replace**: nginx takes whatever is in `rules.http.paths.path` (what the user typed) and replaces it with the value in `rewrite-target`, like calling `replace(path, rewrite-target)`.
+
+| Example | `path` | `rewrite-target` | User visits | Backend receives |
+|---|---|---|---|---|
+| Simple | `/pay` | `/` | `/pay` | `/` |
+| Simple | `/watch` | `/` | `/watch/episode1` | `/watch/episode1` *(only the matched `/watch` prefix is dropped — see caveat below)* |
+
+> ⚠️ A plain `path: /watch` with `rewrite-target: /` only rewrites an **exact match** of `/watch` to `/`. Something like `/watch/episode1` is **not** fully handled by a simple prefix path this way — for that you need a **regex with a capture group**, shown next.
+
+**Regex capture-group form**, for preserving part of the path:
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rewrite
+  namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  rules:
+    - host: rewrite.bar.com
+      http:
+        paths:
+          - path: /something(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: http-svc
+                port:
+                  number: 80
+```
+- `path: /something(/|$)(.*)` is a **regex** with two capture groups: group 1 matches the `/` right after `/something` (or end of string), group 2 captures **everything after that**.
+- `rewrite-target: /$2` means *replace the matched path with `/` followed by capture group 2* — i.e. keep whatever came after `/something/`.
+- Example: `/something/foo/bar` → group 2 is `foo/bar` → backend receives `/foo/bar`. Visiting bare `/something` → group 2 is empty → backend receives `/`.
+- This pattern needs `pathType: ImplementationSpecific` (nginx interprets the path as its own regex syntax, not a plain prefix).
+
+> 📌 Older examples (including the official docs snippet above) use the deprecated `apiVersion: extensions/v1beta1` with `backend.serviceName`/`backend.servicePort`. On a current cluster use `networking.k8s.io/v1` with `backend.service.name`/`backend.service.port.number`, as in the first `rewrite-target` example earlier in this section.
+
 - Use this whenever your Ingress path (e.g. `/pay`, `/wear`) is just a **routing prefix** added by Ingress, and the backend app itself was built to serve from `/`.
 - If the backend app is already aware of and expects the `/pay` prefix, you don't need a rewrite.
 
@@ -4050,6 +4088,103 @@ nginx   k8s.io/ingress-nginx   <none>       14m
 | `kubectl create -f ingress.yaml` | Create the Ingress resource |
 | `kubectl get ingress` (or `ing`) | List Ingress resources |
 | `kubectl describe ingress <name>` | Show the rules, the backends (path to Service), and the **Default backend** |
+
+### TLS Termination on an Ingress
+
+Right now an app is reached over plain HTTP (`http://app.example.com`). **TLS termination** means the **Ingress controller** handles HTTPS encryption/decryption at the edge: clients connect via `https://`, the controller **decrypts** the traffic using a certificate, and forwards the request to the backend **Service as plain HTTP internally**. The app pod itself never needs to know anything about TLS or certificates.
+
+```
+Client --HTTPS (encrypted)--> [Ingress Controller: decrypts here] --HTTP (plain)--> app pod
+```
+
+**The certificate lives in a `kubernetes.io/tls` Secret**, which always holds exactly two keys:
+
+| Key | Holds |
+|---|---|
+| `tls.crt` | The certificate |
+| `tls.key` | The private key |
+
+```bash
+kubectl get secrets -A
+# NAMESPACE   NAME      TYPE                 DATA   AGE
+# webapp      app-tls   kubernetes.io/tls    2      8m9s
+```
+- `DATA 2` is exactly `tls.crt` + `tls.key`.
+- Creating it from existing cert/key files:
+  ```bash
+  kubectl create secret tls app-tls --cert=path/to/cert.crt --key=path/to/key.key -n webapp
+  ```
+
+**Wiring it into the Ingress**: add a `tls` block under `spec`, alongside `rules`. The Ingress only needs the **Secret's name** — not the certificate contents.
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web-app-ingress
+  namespace: webapp
+spec:
+  tls:
+    - hosts:
+        - app.kodekloud.local
+      secretName: app-tls
+  rules:
+    - host: app.kodekloud.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web-app-service
+                port:
+                  number: 80
+```
+
+| Field | Purpose |
+|---|---|
+| `spec.tls` | A **list** — you can secure several hosts, each with its own Secret |
+| `tls[].hosts` | Which host name(s) this certificate covers — should **match** a `host` under `rules` |
+| `tls[].secretName` | The `kubernetes.io/tls` Secret holding `tls.crt` and `tls.key`, **in the same namespace** as the Ingress |
+
+> ⚠️ The Secret **must be in the same namespace** as the Ingress resource. A Secret in another namespace is not visible to it.
+> 📌 `spec.tls` only adds HTTPS. The `rules` section still decides the routing (path/host → Service) exactly as before — TLS and routing are independent parts of the same Ingress.
+> 💡 For a real cluster, certificates are usually issued automatically (e.g. via **cert-manager**) rather than created by hand — but the resulting Secret is wired into the Ingress exactly this way.
+
+### Forcing HTTP → HTTPS Redirects
+
+With `tls` configured, the Ingress accepts **both** `http://` and `https://`. To make plain HTTP requests **automatically redirect** to HTTPS, add an annotation under `metadata.annotations`:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web-app-ingress
+  namespace: webapp
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  tls:
+    - hosts:
+        - app.kodekloud.local
+      secretName: app-tls
+  rules:
+    - host: app.kodekloud.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web-app-service
+                port:
+                  number: 80
+```
+
+- `nginx.ingress.kubernetes.io/ssl-redirect: "true"` is an **nginx-controller annotation** (note it must be the **string** `"true"`, in quotes, like any annotation value — see [Section 32](#32-labels-selectors--annotations)).
+- As with `rewrite-target` (above), this is controller-specific behavior exposed through an **annotation** rather than a field in the generic Ingress `spec`, because it isn't part of the standard Ingress API.
+- This only makes sense **once `spec.tls` is configured** for that host — there must be an HTTPS endpoint to redirect to.
+- A different controller (e.g. Traefik) uses its **own** annotation prefix/key for the same behavior, not `nginx.ingress.kubernetes.io/...`. Always check the annotation reference for whichever controller is actually running in your cluster (see *Checking Everything Is Working* above to find out which one that is).
 
 ### Creating an Ingress Imperatively (k8s 1.20+)
 
