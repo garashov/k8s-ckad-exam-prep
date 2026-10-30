@@ -4228,7 +4228,7 @@ Everything lives under `/var/lib/docker/`:
 ```mermaid
 flowchart BT
     L1["Layer 1: base OS (ubuntu)"] --> L2["Layer 2: apt packages"] --> L3["Layer 3: pip dependencies"] --> L4A["App A: source code + entrypoint"]
-    L3 --> L4B["App B: different source code + <br/> entrypoint"]
+    L3 --> L4B["App B: different source code + entrypoint"]
 ```
 
 ### Image Layers vs the Container Layer
@@ -4294,4 +4294,21 @@ docker run --mount type=bind,source=/data/mysql,target=/var/lib/mysql mysql
 - Docker **auto-selects** the best available driver for the host OS.
 - Different drivers have different performance/stability trade-offs — check the Docker docs when choosing deliberately.
 
-> 📌 **Volume drivers** are a related but separate concept (pluggable backends for where volume data actually lives, e.g. local disk vs cloud storage) — covered next.
+### Volume Drivers (plugins)
+
+**Volumes are not handled by storage drivers** — they are handled by **volume driver plugins**, a separate pluggable system.
+
+- The **default** volume driver is `local`: it creates volumes on the Docker host, stored under `/var/lib/docker/volumes/` (exactly what the examples above used).
+- Other volume driver plugins let a container's volume live on **third-party/cloud storage** instead of the local disk: Azure File Storage, Convoy, DigitalOcean Block Storage, Flocker, Google Compute Persistent Disks, GlusterFS, NetApp, REX-Ray, Portworx, VMware vSphere Storage, and others.
+- Some plugins support **multiple backends** — e.g. **REX-Ray** can provision storage on AWS EBS, AWS S3, EMC storage arrays (Isilon, ScaleIO), Google Persistent Disk, or OpenStack Cinder.
+
+**Using a specific volume driver:**
+```bash
+docker run --volume-driver rexray/ebs --mount src=ebs-vol,target=/var/lib/mysql mysql
+```
+- This creates the container with a volume **provisioned in the cloud** (e.g. an AWS EBS volume) instead of local disk.
+- When the container exits (or is destroyed), the **data is still safe** in the cloud, independent of the Docker host.
+
+> 📌 This cloud-backed volume idea is the direct ancestor of Kubernetes' own storage model (Volumes, Persistent Volumes, Storage Classes), covered next.
+
+---
