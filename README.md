@@ -41,6 +41,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 36. [CronJobs](#36-cronjobs)
 37. [Network Policies](#37-network-policies)
 38. [Ingress](#38-ingress)
+39. [Docker Storage: Layers, Volumes & Drivers](#39-docker-storage-layers-volumes--drivers)
 
 ---
 
@@ -4205,3 +4206,92 @@ kubectl create ingress ingress-wear-watch \
 - Other flags: `--default-backend=svc:port`, `--class=<ingress-class>`, `--annotation <key>=<value>`.
 
 ---
+
+## 39. Docker Storage: Layers, Volumes & Drivers
+
+> Foundational for Kubernetes storage (Volumes, PV/PVC). Covers two Docker concepts: **storage drivers** (the layered filesystem) and **volume drivers** (persisting data).
+
+### Where Docker Stores Data
+Everything lives under `/var/lib/docker/`:
+
+| Folder | Holds |
+|---|---|
+| `containers/` | Files related to containers |
+| `image/` | Files related to images |
+| `volumes/` | Volumes created by containers |
+
+### Layered Architecture (recap from Section 12)
+- Each Dockerfile instruction creates a **new layer**, storing only the diff from the one before.
+- **Layers are cached and reused across images.** A second app that shares the same base OS and dependencies (same first N instructions) **reuses those layers** from the first build and only builds the layers that differ (its own source code, entry point).
+- Updating only the application source code similarly reuses every earlier layer and rebuilds just the final one(s) — this is why rebuilds after a small code change are fast.
+
+```mermaid
+flowchart BT
+    L1["Layer 1: base OS (ubuntu)"] --> L2["Layer 2: apt packages"] --> L3["Layer 3: pip dependencies"] --> L4A["App A: source code + entrypoint"]
+    L3 --> L4B["App B: different source code + <br/> entrypoint"]
+```
+
+### Image Layers vs the Container Layer
+
+| Layer | Created when | Writable? | Lifetime |
+|---|---|---|---|
+| **Image layers** | `docker build` | **Read-only** | Permanent (only changes with a new build) |
+| **Container layer** | `docker run` | **Read-write** | Only as long as the **container** exists — deleted with it |
+
+- All containers created from the same image **share** that image's read-only layers.
+- The container layer stores anything the running container creates or changes: logs, temp files, user-modified files.
+
+### Copy-on-Write
+Image layers are read-only, so how can a container "edit" a file that's part of the image (e.g. app source code)? Docker uses **copy-on-write**:
+1. The file requested for editing exists only in a read-only image layer.
+2. Before the write happens, Docker **copies that file into the writable container layer**.
+3. All further changes happen on **that copy**, in the container layer — the original in the image is untouched.
+
+The image itself never changes; only `docker build` can do that.
+
+> ⚠️ **Deleting the container deletes the container layer** — any files created or modified there (including copy-on-write copies) are lost. For data that must survive, use a **volume**.
+
+### Volumes (persisting data)
+
+**Volume mount** — Docker manages the location, under `/var/lib/docker/volumes/`:
+```bash
+docker volume create data_volume
+docker run -v data_volume:/var/lib/mysql mysql
+```
+- If the volume isn't created ahead of time, `docker run -v <name>:<path> ...` **auto-creates** it under `/var/lib/docker/volumes/`.
+
+**Bind mount** — mount an existing directory from **anywhere** on the host:
+```bash
+docker run -v /data/mysql:/var/lib/mysql mysql
+```
+
+| Type | Source location | Created by |
+|---|---|---|
+| **Volume mount** | `/var/lib/docker/volumes/<name>` (Docker-managed) | Docker (auto, or via `docker volume create`) |
+| **Bind mount** | Any path on the host you specify | You (must already exist) |
+
+**Modern syntax**: `-v` is the old, terse style. `--mount` is the **preferred**, more verbose, key=value style:
+```bash
+docker run --mount type=bind,source=/data/mysql,target=/var/lib/mysql mysql
+```
+
+| `--mount` key | Meaning |
+|---|---|
+| `type` | `bind` or `volume` |
+| `source` | Path/name on the host |
+| `target` | Path inside the container |
+
+### Storage Drivers
+**Storage drivers** implement the layered filesystem: maintaining layers, creating the writable container layer, and handling copy-on-write.
+
+| Driver | Notes |
+|---|---|
+| AUFS | Default on Ubuntu |
+| Overlay / Overlay2 | Common modern default on many distros |
+| Device Mapper | Common on Fedora/CentOS (AUFS not available there) |
+| Btrfs, ZFS | Available depending on host filesystem |
+
+- Docker **auto-selects** the best available driver for the host OS.
+- Different drivers have different performance/stability trade-offs — check the Docker docs when choosing deliberately.
+
+> 📌 **Volume drivers** are a related but separate concept (pluggable backends for where volume data actually lives, e.g. local disk vs cloud storage) — covered next.
