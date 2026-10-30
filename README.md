@@ -43,6 +43,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 38. [Ingress](#38-ingress)
 39. [Docker Storage: Layers, Volumes & Drivers](#39-docker-storage-layers-volumes--drivers)
 40. [Kubernetes Volumes](#40-kubernetes-volumes)
+41. [Persistent Volumes](#41-persistent-volumes)
 
 ---
 
@@ -4375,5 +4376,77 @@ For multi-node clusters, Kubernetes supports many **external storage backends** 
 Everything else (the `volumeMounts` in the container) stays the same — only **where the volume's data physically lives** changes.
 
 > 📌 This is the plain Kubernetes **Volume** object: simple, but you configure the exact storage backend separately in **every pod** that needs it. The next lecture (**Persistent Volumes**) centralizes that configuration so pods don't need to know the storage details themselves.
+
+---
+
+## 41. Persistent Volumes
+
+Builds on [Section 40](#40-kubernetes-volumes).
+
+### The Problem
+With plain Volumes, **every pod definition** has to configure its own storage backend. In a large environment with many users and many pods:
+- Every pod needs the storage details duplicated in its own definition file.
+- Any change to the storage configuration must be repeated across **every** pod that uses it.
+
+### The Solution
+A **PersistentVolume (PV)** is a **cluster-wide pool of storage**, configured once (usually by an **administrator**), independent of any one pod. Users then **carve out a piece of it** using a **PersistentVolumeClaim** ([Section 42](#42-persistent-volume-claims)), instead of configuring storage themselves in every pod.
+
+```mermaid
+flowchart LR
+    A["Administrator"] -->|creates| PV["PersistentVolume<br/>(cluster-wide storage pool)"]
+    U["User / pod"] -->|claims a piece via| PVC["PersistentVolumeClaim"]
+    PVC -.->|bound to| PV
+```
+
+### Creating a PersistentVolume
+
+```yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-vol1
+spec:
+  accessModes:
+    - ReadWriteOnce
+  capacity:
+    storage: 1Gi
+  hostPath:
+    path: /tmp/data
+```
+
+| Field | Purpose |
+|---|---|
+| `spec.accessModes` | How the volume may be mounted (see below) |
+| `spec.capacity.storage` | How much storage is reserved for this PV (e.g. `1Gi`) |
+| `spec.hostPath` (or another backend) | Where the storage actually lives — same backend options as plain Volumes ([Section 40](#40-kubernetes-volumes)): `hostPath`, `awsElasticBlockStore`, NFS, etc. |
+
+### Access Modes
+
+| Mode | Meaning |
+|---|---|
+| `ReadOnlyMany` | Mounted read-only by many nodes at once |
+| `ReadWriteOnce` | Mounted read-write by a **single** node at a time |
+| `ReadWriteMany` | Mounted read-write by many nodes at once |
+
+> 📌 The lecture also mentions a plain "read only" mode; the actual supported value is `ReadOnlyMany` (there is no single-node-only read-only mode as a separate value).
+
+### Backend
+The example above uses `hostPath`, exactly like a plain Volume.
+
+> ⚠️ Same caveat as [Section 40](#40-kubernetes-volumes): `hostPath` is **not suitable for production / multi-node clusters** — it ties storage to one specific node's local disk.
+
+Swap in a real backend the same way as with plain Volumes, e.g. AWS EBS:
+```yaml
+  awsElasticBlockStore:
+    volumeID: <volume-id>
+    fsType: ext4
+```
+
+### Commands
+
+| Command | Purpose |
+|---|---|
+| `kubectl create -f pv-definition.yaml` | Create the PersistentVolume |
+| `kubectl get persistentvolume` (or `pv`) | List PersistentVolumes |
 
 ---
