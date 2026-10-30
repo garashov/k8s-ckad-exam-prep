@@ -42,6 +42,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 37. [Network Policies](#37-network-policies)
 38. [Ingress](#38-ingress)
 39. [Docker Storage: Layers, Volumes & Drivers](#39-docker-storage-layers-volumes--drivers)
+40. [Kubernetes Volumes](#40-kubernetes-volumes)
 
 ---
 
@@ -4310,5 +4311,69 @@ docker run --volume-driver rexray/ebs --mount src=ebs-vol,target=/var/lib/mysql 
 - When the container exits (or is destroyed), the **data is still safe** in the cloud, independent of the Docker host.
 
 > 📌 This cloud-backed volume idea is the direct ancestor of Kubernetes' own storage model (Volumes, Persistent Volumes, Storage Classes), covered next.
+
+---
+
+
+## 40. Kubernetes Volumes
+
+### The Problem (same as Docker)
+- Pods, like Docker containers, are **transient**: created to do work and then deleted.
+- Data **inside** a pod is deleted along with the pod.
+- **Solution**: attach a **Volume** to the pod. Data written there survives the pod's deletion.
+
+### A Simple Example
+A pod generates a random number and writes it to `/opt/number.out`. Without a volume, the number is lost when the pod is deleted.
+
+**1. Define a volume** (here, backed by a directory on the host):
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: random-number-generator
+spec:
+  containers:
+    - name: alpine
+      image: alpine
+      command: ["/bin/sh", "-c"]
+      args: ["shuf -i 0-100 -n 1 > /opt/number.out"]
+      volumeMounts:
+        - mountPath: /opt
+          name: data-volume
+  volumes:
+    - name: data-volume
+      hostPath:
+        path: /data
+        type: Directory
+```
+
+| Part | Purpose |
+|---|---|
+| `spec.volumes` | Defines the volume(s) available to the pod (here, `data-volume` backed by `/data` on the **host**) |
+| `spec.containers[].volumeMounts` | **Mounts** a defined volume into a path **inside the container** (here, `/opt`) |
+
+- The container writes to `/opt/number.out`, which (because of the mount) is actually written to `/data/number.out` **on the node**.
+- When the pod is deleted, the file still exists on the host — the volume outlived the pod.
+- `volumes[].name` and `volumeMounts[].name` must **match** — same pattern as every other volume usage in these notes (ConfigMap/Secret volumes in [Section 16](#16-configmaps)/[Section 17](#17-secrets), the manual service-account token volumes in [Section 22](#22-service-accounts)).
+
+### Volume Storage Backends
+
+**`hostPath`** (what the example above uses) stores data in a directory **on the node itself**.
+
+> ⚠️ **Not recommended on a multi-node cluster.** A pod using `hostPath: /data` expects that data to be there regardless of which node it lands on, but each node's `/data` is **a different, unrelated directory** — there's no automatic replication between nodes. This only reliably works on a **single-node** cluster (or with external, replicated storage configured separately).
+
+For multi-node clusters, Kubernetes supports many **external storage backends** instead, e.g.: NFS, GlusterFS, Flocker, Fibre Channel, CephFS, ScaleIO, or cloud options like **AWS EBS**, **Azure Disk/Files**, **Google Persistent Disk**.
+
+**Example: AWS EBS instead of `hostPath`** — just swap out the backend field under `volumes`:
+```yaml
+  volumes:
+    - name: data-volume
+      awsElasticBlockStore:
+        volumeID: <volume-id>
+        fsType: ext4
+```
+Everything else (the `volumeMounts` in the container) stays the same — only **where the volume's data physically lives** changes.
+
+> 📌 This is the plain Kubernetes **Volume** object: simple, but you configure the exact storage backend separately in **every pod** that needs it. The next lecture (**Persistent Volumes**) centralizes that configuration so pods don't need to know the storage details themselves.
 
 ---
