@@ -44,6 +44,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 39. [Docker Storage: Layers, Volumes & Drivers](#39-docker-storage-layers-volumes--drivers)
 40. [Kubernetes Volumes](#40-kubernetes-volumes)
 41. [Persistent Volumes](#41-persistent-volumes)
+42. [Persistent Volume Claims](#42-persistent-volume-claims)
 
 ---
 
@@ -4448,5 +4449,97 @@ Swap in a real backend the same way as with plain Volumes, e.g. AWS EBS:
 |---|---|
 | `kubectl create -f pv-definition.yaml` | Create the PersistentVolume |
 | `kubectl get persistentvolume` (or `pv`) | List PersistentVolumes |
+
+---
+
+## 42. Persistent Volume Claims
+
+Builds on [Section 41](#41-persistent-volumes).
+
+- **PV (PersistentVolume)** and **PVC (PersistentVolumeClaim)** are **two separate objects**.
+- An **administrator** creates PVs (the storage pool). A **user** creates PVCs to **claim** a piece of that storage for their application.
+- Kubernetes **binds** a PVC to a PV automatically, based on the claim's requested properties.
+
+### How Binding Works
+When a PVC is created, Kubernetes looks for a PV that satisfies it:
+
+| Matched on | Notes |
+|---|---|
+| **Capacity** | The PV must have **at least** the requested amount |
+| **Access modes** | Must match what the claim asks for |
+| Other properties | Volume modes, storage class, etc. |
+
+- **One PVC binds to exactly one PV** (1:1) — no other claim can use the remaining space in that volume, even if there's some left over.
+- If **several** PVs could satisfy a claim, **labels and selectors** can be used on the PVC to bind to a **specific** one.
+- A **smaller claim can bind to a larger volume** if it's the best (or only) match available — the rest of that volume's capacity is then unusable by anyone else.
+- If **no PV** currently satisfies a claim, the PVC stays in **`Pending`** until a suitable PV becomes available, at which point it **binds automatically**.
+
+### Creating a PersistentVolumeClaim
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: myclaim
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 500Mi
+```
+
+- Using the PV from [Section 41](#41-persistent-volumes) (`accessModes: ReadWriteOnce`, `capacity: 1Gi`): this claim's access mode matches, and 500Mi fits within the PV's 1Gi, so Kubernetes binds them — even though the claim asked for less than the PV provides.
+
+### Commands
+
+| Command | Purpose |
+|---|---|
+| `kubectl create -f pvc-definition.yaml` | Create the PVC |
+| `kubectl get persistentvolumeclaim` (or `pvc`) | List PVCs and see their status (`Pending` / `Bound`) and which PV they're bound to |
+| `kubectl get persistentvolume` (or `pv`) | Check the PV's status too — it also shows as `Bound` |
+| `kubectl delete persistentvolumeclaim <name>` (or `pvc`) | Delete the PVC |
+
+### What Happens to the PV When Its PVC Is Deleted?
+
+Controlled by `spec.persistentVolumeReclaimPolicy` on the **PV**:
+
+| Policy | Behavior |
+|---|---|
+| **Retain** (default) | The PV **remains**, holding its data, until an **administrator manually deletes** it. It is **not** reusable by another claim in the meantime |
+| **Delete** | The PV (and typically its underlying storage) is **deleted automatically** as soon as the claim is deleted |
+| **Recycle** ⚠️ **deprecated** | The PV's data was wiped (`rm -rf` on the volume's contents via a short-lived recycler pod) so it could be reused by a new claim |
+
+> ⚠️ **Why `Recycle` is deprecated**: it only did a best-effort, file-level wipe. It didn't guarantee secure erasure, didn't handle snapshots or provider metadata, and only worked for a handful of plugins (EBS, GCE PD, Azure Disk, NFS, etc.). Proper cleanup needs unmounting, detaching, filesystem reformatting, snapshot/retention handling, encryption key rotation, or provider-level delete calls — a plain `rm -rf` can leave inode metadata behind or fail on permissions.
+> 📌 The modern replacement is **dynamic provisioning** with a **StorageClass** and **CSI drivers** (covered next) — storage is provisioned and cleaned up properly by the driver itself, instead of relying on a manual reclaim policy.
+
+### Using a PVC in a Pod
+
+Reference the PVC's **name** under `persistentVolumeClaim` in the pod's `volumes` section — same `volumes` + `volumeMounts` pattern as every other volume type in these notes:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mypod
+spec:
+  containers:
+    - name: myfrontend
+      image: nginx
+      volumeMounts:
+        - mountPath: "/var/www/html"
+          name: mypd
+  volumes:
+    - name: mypd
+      persistentVolumeClaim:
+        claimName: myclaim
+```
+
+| Field | Purpose |
+|---|---|
+| `volumes[].persistentVolumeClaim.claimName` | The **name of the PVC** to use (`myclaim`, from [this section](#42-persistent-volume-claims)) |
+| `volumes[].name` ↔ `volumeMounts[].name` | Must **match** (here, `mypd`) — links the volume to where it's mounted in the container |
+
+> 📌 Same pattern in a **Deployment or ReplicaSet**: add this `volumes`/`volumeMounts` pair to the **pod template section** (`spec.template.spec`), exactly as for a plain pod.
 
 ---
