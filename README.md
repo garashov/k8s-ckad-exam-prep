@@ -45,6 +45,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 40. [Kubernetes Volumes](#40-kubernetes-volumes)
 41. [Persistent Volumes](#41-persistent-volumes)
 42. [Persistent Volume Claims](#42-persistent-volume-claims)
+43. [Storage Classes](#43-storage-classes)
 
 ---
 
@@ -4541,5 +4542,89 @@ spec:
 | `volumes[].name` ↔ `volumeMounts[].name` | Must **match** (here, `mypd`) — links the volume to where it's mounted in the container |
 
 > 📌 Same pattern in a **Deployment or ReplicaSet**: add this `volumes`/`volumeMounts` pair to the **pod template section** (`spec.template.spec`), exactly as for a plain pod.
+
+---
+
+## 43. Storage Classes
+
+Builds on [Sections 41](#41-persistent-volumes) and [42](#42-persistent-volume-claims).
+
+### The Problem: Static Provisioning
+With a plain PV/PVC setup backed by cloud storage (e.g. a Google Cloud persistent disk), **you** must:
+1. Manually **provision the disk** on the cloud provider first.
+2. Manually create a **PV definition** that references that same disk.
+3. Only then can a PVC bind to it.
+
+Every time an app needs storage, someone repeats this by hand. This is called **static provisioning**.
+
+### The Solution: Dynamic Provisioning
+A **StorageClass** defines a **provisioner** that **automatically creates the underlying disk and the PV** whenever a PVC asks for that class. No more manually provisioning disks or writing PV definitions. This is **dynamic provisioning**.
+
+```mermaid
+flowchart LR
+    SC["StorageClass<br/>(provisioner: kubernetes.io/gce-pd)"] -.->|used by| PVC["PVC<br/>storageClassName: google-storage"]
+    PVC -->|"on creation, triggers"| P["Provisioner creates:<br/>1. the disk on the cloud<br/>2. a matching PV"]
+    P --> B["PVC automatically bound to the new PV"]
+```
+
+### Creating a StorageClass
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: google-storage
+provisioner: kubernetes.io/gce-pd
+parameters:
+  type: pd-standard
+  replication-type: none
+```
+
+- `provisioner`: which backend creates the storage. Many exist, not just GCE: AWS EBS, Azure Disk, Azure File, CephFS, Portworx, ScaleIO, and others.
+- `parameters`: **provisioner-specific** options. For Google Persistent Disk: `type` (`pd-standard` or `pd-ssd`) and `replication-type` (`none` or `regional-pd`). Other provisioners have their own parameter sets.
+
+> ⚠️ The lecture says the API version is `storage.io/v1`. The correct value is `storage.k8s.io/v1`.
+
+### Using a StorageClass in a PVC
+
+Just add `storageClassName`, pointing at the StorageClass's name — **no PV definition needed at all**:
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: myclaim
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: google-storage
+  resources:
+    requests:
+      storage: 500Mi
+```
+
+- You still create a **PVC** as before — that part doesn't change.
+- The difference: the **PV and the disk it's backed by are created automatically** by the StorageClass's provisioner, instead of you creating them by hand ahead of time.
+- The pod then uses this PVC exactly as in [Section 42](#42-persistent-volume-claims) (`volumes[].persistentVolumeClaim.claimName`).
+
+### "Classes" of Storage
+The name "storage **class**" reflects that you can define multiple classes representing different service tiers, e.g.:
+
+| Class | Disk type | Replication |
+|---|---|---|
+| `silver` | Standard disk | None |
+| `gold` | SSD | None |
+| `platinum` | SSD | Regional (replicated) |
+
+A PVC then simply requests the class of storage it needs via `storageClassName`, without the user needing to know the underlying provisioning details.
+
+### Commands
+
+| Command | Purpose |
+|---|---|
+| `kubectl create -f storageclass-definition.yaml` | Create the StorageClass |
+| `kubectl get storageclass` (or `sc`) | List StorageClasses |
+
+> 💡 A cluster can mark one StorageClass as the **default** (via the `storageclass.kubernetes.io/is-default-class: "true"` annotation). A PVC with no `storageClassName` uses that default automatically, if one exists.
 
 ---
