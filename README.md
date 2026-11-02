@@ -48,6 +48,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 43. [Storage Classes](#43-storage-classes)
 44. [StatefulSets — Why They Exist](#44-statefulsets--why-they-exist)
 45. [StatefulSets — Creating One](#45-statefulsets--creating-one)
+46. [Headless Services](#46-headless-services)
 
 ---
 
@@ -4774,5 +4775,101 @@ spec:
 | `kubectl get pods` | Pods appear as `<name>-0`, `<name>-1`, ... and come up **one at a time** |
 | `kubectl scale statefulset <name> --replicas=5` | Scale (ordered, unless `podManagementPolicy: Parallel`) |
 | `kubectl delete statefulset <name>` | Delete (pods removed in reverse order, unless `Parallel`) |
+
+---
+
+## 46. Headless Services
+
+Builds on [Sections 44](#44-statefulsets--why-they-exist) and [45](#45-statefulsets--creating-one). This is what `spec.serviceName` on a StatefulSet actually needs.
+
+### The Problem
+A normal Service (`mysql`) **load-balances** traffic across all its pods — fine for **reads** (master or any slave can serve them), but **wrong for writes**, which must go only to the **master**.
+
+- Can't use the **pod's IP**: IPs change when a pod is recreated.
+- Can't use a **normal Service's DNS**: it resolves to the Service's load-balanced ClusterIP, spreading traffic across every pod behind it, not one specific pod.
+
+What's needed: a DNS entry that reaches **one specific pod** directly, without load balancing.
+
+### The Solution: Headless Service
+
+A **headless Service**:
+- Is created **like a normal Service**, but has **no ClusterIP** (`clusterIP: None`).
+- Does **not load-balance**.
+- Only creates a **DNS entry per pod**.
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-h
+spec:
+  clusterIP: None
+  ports:
+    - port: 3306
+  selector:
+    app: mysql
+```
+
+| Field | Purpose |
+|---|---|
+| `clusterIP: None` | What makes it **headless** instead of a normal Service |
+| `selector` | Still used, same as a normal Service, to find the matching pods |
+
+### DNS Record Format
+
+| Service type | DNS resolves to |
+|---|---|
+| Normal Service | `<service>.<namespace>.svc.cluster.local` → the Service's **ClusterIP** (load-balanced) |
+| Headless Service | `<pod-name>.<service>.<namespace>.svc.cluster.local` → **that one pod's** IP directly |
+
+Example: with the headless Service `mysql-h`, the master pod `mysql-0` gets:
+```
+mysql-0.mysql-h.default.svc.cluster.local
+```
+The web app points its **write** traffic at exactly this address — always the master, never load-balanced.
+
+```mermaid
+flowchart LR
+    W["Web app"] -->|"reads: mysql.default.svc.cluster.local<br/>(load-balanced, any pod)"| N["Normal Service: mysql"]
+    W -->|"writes: mysql-0.mysql-h.default.svc.cluster.local<br/>(direct to one pod)"| H["Headless Service: mysql-h"]
+    N --> P0["mysql-0 (master)"]
+    N --> P1["mysql-1 (slave)"]
+    N --> P2["mysql-2 (slave)"]
+    H -.->|DNS only, no LB| P0
+```
+
+### What a Pod Needs for a Per-Pod DNS Record
+
+Two **optional pod spec fields** control this, and **both** are needed:
+
+| Field | Effect alone |
+|---|---|
+| `subdomain` | Set to the headless Service's name. Creates a DNS record for the **Service name** pointing at the pod, but **not** a separate record per pod |
+| `hostname` | **Also required** to get a DNS record using the **pod's own name** (an individual A record per pod) |
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mysql-0
+  labels:
+    app: mysql
+spec:
+  hostname: mysql-0
+  subdomain: mysql-h
+  containers:
+    - name: mysql
+      image: mysql
+```
+
+### Why This Doesn't Work with a Plain Deployment
+A Deployment just **duplicates the same pod template** for every replica. If you set `hostname`/`subdomain` in the pod template of a Deployment, **every pod gets the exact same `hostname`** — so they'd all register the **same** DNS name, defeating the purpose of addressing pods individually.
+
+### Why StatefulSet Solves This Automatically
+A StatefulSet does **not** require you to set `hostname`/`subdomain` yourself:
+- It automatically sets each pod's **`hostname`** to that pod's unique name (`mysql-0`, `mysql-1`, ...).
+- It automatically sets **`subdomain`** to the StatefulSet's `serviceName` — which is exactly why `spec.serviceName` is a **required** field on a StatefulSet ([Section 45](#45-statefulsets--creating-one)): it's how the StatefulSet knows which headless Service's name to use as the subdomain, since a cluster can have many headless Services for different apps.
+
+This is why, with a StatefulSet + a headless Service, **every pod automatically gets its own stable, individually addressable DNS record** — no manual `hostname`/`subdomain` configuration needed.
 
 ---
