@@ -46,6 +46,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 41. [Persistent Volumes](#41-persistent-volumes)
 42. [Persistent Volume Claims](#42-persistent-volume-claims)
 43. [Storage Classes](#43-storage-classes)
+44. [StatefulSets — Why They Exist](#44-statefulsets--why-they-exist)
 
 ---
 
@@ -4626,5 +4627,61 @@ A PVC then simply requests the class of storage it needs via `storageClassName`,
 | `kubectl get storageclass` (or `sc`) | List StorageClasses |
 
 > 💡 A cluster can mark one StorageClass as the **default** (via the `storageclass.kubernetes.io/is-default-class: "true"` annotation). A PVC with no `storageClassName` uses that default automatically, if one exists.
+
+---
+
+## 44. StatefulSets — Why They Exist
+
+### The Scenario: MySQL Replication
+A single-master, multi-slave MySQL setup (one common topology): writes go to the **master**, reads can go to the master **or** any **slave**.
+
+```mermaid
+flowchart TB
+    M["Master<br/>(mysql-0)"]
+    S1["Slave 1<br/>(mysql-1)"]
+    S2["Slave 2<br/>(mysql-2)"]
+    M -->|"1. initial clone"| S1
+    M -->|"2. continuous replication"| S1
+    S1 -->|"3. initial clone (not from master, to save its resources)"| S2
+    M -->|"4. continuous replication"| S2
+```
+
+Setting this up has a required **order**:
+1. The **master** must come up **first**.
+2. **Slave 1** comes up, does an initial **clone from the master**, then starts **continuous replication** from the master.
+3. **Slave 2** comes up, clones from **slave 1** (not the master — cloning from the master every time would strain the master's resources, especially network), then also enables continuous replication **from the master**.
+4. Both slaves are configured with the **master's address**, so they know where to replicate from.
+
+### Why a Deployment Can't Do This
+
+| Requirement | Why a Deployment fails here |
+|---|---|
+| Master must start **before** the slaves, slave 1 before slave 2 | A Deployment starts **all pods at the same time**, with no ordering |
+| Need to tell pods apart (which is master, which is slave 1/2) | Deployment pods get **random names** |
+| Slaves need a **stable, unchanging address** for the master | Pod **IPs change** when a pod is recreated, and a replacement pod in a Deployment gets a **new random name** too |
+
+If the "master" pod crashes and the Deployment recreates it, the replacement has a brand-new name — any slave configured to point at the old name is now pointing at nothing.
+
+### The Solution: StatefulSet
+
+A **StatefulSet** is similar to a Deployment (pods from a template, can scale, supports rolling updates/rollbacks), but adds:
+
+| Feature | Behavior |
+|---|---|
+| **Ordered, sequential pod creation** | Pod *N* must be **Running and Ready** before pod *N+1* is created |
+| **Stable, predictable names** | Pods are named `<statefulset-name>-0`, `-1`, `-2`, ... (an **ordinal index**, starting at 0) |
+| **Sticky identity** | If a pod is recreated (e.g. after a crash), it comes back with the **same name** (and, with the right setup, the same storage) |
+
+```mermaid
+flowchart LR
+    P0["mysql-0<br/>(created 1st, becomes Running/Ready)"] --> P1["mysql-1<br/>(created 2nd)"] --> P2["mysql-2<br/>(created 3rd)"]
+```
+
+Applied to the MySQL scenario:
+- `mysql-0` is **always** the first pod created → it's the natural choice for **master**.
+- `mysql-1` knows to clone from `mysql-1 - 1` = `mysql-0`. `mysql-2` clones from `mysql-1`. Scaling up to a 4th pod, `mysql-3`, it knows to clone from `mysql-2` — the pattern follows the ordinal index.
+- Slaves point their replication config at `mysql-0` by name. Even if the pod behind `mysql-0` crashes and is recreated, **the name `mysql-0` stays the same**, so the slaves' configuration keeps working.
+
+> 📌 This lecture just motivates **why** StatefulSets exist. The actual StatefulSet definition file, headless Services (needed for stable per-pod network identity), and how storage/PVCs work with StatefulSets are covered in the following lectures.
 
 ---
