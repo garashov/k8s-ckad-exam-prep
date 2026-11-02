@@ -49,6 +49,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 44. [StatefulSets — Why They Exist](#44-statefulsets--why-they-exist)
 45. [StatefulSets — Creating One](#45-statefulsets--creating-one)
 46. [Headless Services](#46-headless-services)
+47. [Storage in StatefulSets — Volume Claim Templates](#47-storage-in-statefulsets--volume-claim-templates)
 
 ---
 
@@ -4871,5 +4872,93 @@ A StatefulSet does **not** require you to set `hostname`/`subdomain` yourself:
 - It automatically sets **`subdomain`** to the StatefulSet's `serviceName` — which is exactly why `spec.serviceName` is a **required** field on a StatefulSet ([Section 45](#45-statefulsets--creating-one)): it's how the StatefulSet knows which headless Service's name to use as the subdomain, since a cluster can have many headless Services for different apps.
 
 This is why, with a StatefulSet + a headless Service, **every pod automatically gets its own stable, individually addressable DNS record** — no manual `hostname`/`subdomain` configuration needed.
+
+---
+
+## 47. Storage in StatefulSets — Volume Claim Templates
+
+Builds on [Sections 41–43](#41-persistent-volumes) (PV/PVC/StorageClass) and [45](#45-statefulsets--creating-one) (StatefulSets).
+
+### Recap: Single-Pod Storage
+Plain PV/PVC flow, one pod: a PV is created (manually, or automatically via a StorageClass's provisioner) → a PVC claims it → a pod references the PVC. One PVC maps to one PV maps to one pod definition.
+
+### What Happens with Multiple Pods (Deployment or StatefulSet)?
+
+If a **PVC** is referenced directly in a pod template (`volumes[].persistentVolumeClaim.claimName`, [Section 42](#42-persistent-volume-claims)) and that template is used to create **several** pods, **all of those pods share the same PVC — and therefore the same underlying volume**.
+
+| Want | Use |
+|---|---|
+| All pods **sharing one** volume | A PVC referenced directly in the pod template, as usual |
+| **Each pod** with its **own separate** volume | **Volume claim templates** (below) |
+
+> ⚠️ Whether multiple pods can actually read/write the **same** volume **at once** depends on the storage type and its supported **access modes** ([Section 41](#41-persistent-volumes)) — not every backend supports concurrent read-write from multiple pods (`ReadWriteMany`). Check your provisioner/backend before relying on shared access.
+
+### The MySQL Case: Separate Storage per Pod
+In the replication example ([Section 44](#44-statefulsets--why-they-exist)), each MySQL pod has its **own local database** — they don't share one disk. Data syncs at the **database level** (replication), not by sharing a filesystem. So each pod needs its **own PVC**, bound to its **own PV**.
+
+Creating a PVC by hand for every pod doesn't scale — that's what **volume claim templates** solve.
+
+### Volume Claim Templates
+A **volume claim template** is a PVC definition, but **templated**: instead of creating the PVC yourself and referencing its name, you put the **entire PVC spec** under `volumeClaimTemplates` in the StatefulSet, and Kubernetes **creates one PVC per pod automatically**.
+
+```yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql
+spec:
+  serviceName: mysql-h
+  replicas: 3
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+        - name: mysql
+          image: mysql
+          volumeMounts:
+            - name: data-volume
+              mountPath: /var/lib/mysql
+  volumeClaimTemplates:
+    - metadata:
+        name: data-volume
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: google-storage
+        resources:
+          requests:
+            storage: 500Mi
+```
+
+| Field | Purpose |
+|---|---|
+| `spec.volumeClaimTemplates` | A **list** — you can define several templates (e.g. one for data, one for logs) |
+| Each template's `metadata.name` | Matched against `volumeMounts[].name` in the pod template, same as a normal volume reference |
+| Each template's `spec` | An ordinary PVC spec: `accessModes`, `storageClassName`, `resources.requests.storage` |
+
+### What Happens on Creation
+
+```mermaid
+flowchart TB
+    P0["pod mysql-0 created"] --> C0["PVC created for mysql-0"] --> SC0["StorageClass provisions a disk on GCP"] --> PV0["PV created, bound to the PVC"]
+    PV0 --> P1["pod mysql-1 created (after mysql-0 is Ready)"] --> C1["PVC created for mysql-1"] --> SC1["new disk provisioned"] --> PV1["new PV, bound"]
+    PV1 --> P2["pod mysql-2 created, same pattern..."]
+```
+
+- Pods are still created **one at a time**, in order (the usual StatefulSet behavior — [Section 45](#45-statefulsets--creating-one)).
+- For **each** pod: a PVC is created → the StorageClass provisions a **new disk** → a PV is created from it → the PVC binds to that PV.
+- The result: `mysql-0`, `mysql-1`, `mysql-2` each end up with their **own independent volume**.
+
+### Stable Storage on Pod Recreation
+If a pod **fails and is recreated or rescheduled**, the StatefulSet does **not** delete its PVC or provision a new one. Instead, the **same PVC** (and therefore the same underlying volume and data) is **reattached** to the replacement pod.
+
+> 📌 This mirrors the **sticky identity** behavior from [Section 44](#44-statefulsets--why-they-exist) (stable pod names) — StatefulSets give you both **stable names** and **stable storage** for each ordinal position.
+
+> 💡 Deleting a StatefulSet does **not** automatically delete its PVCs (by design, to protect data) — clean them up manually with `kubectl delete pvc` if you really want the storage gone too.
 
 ---
