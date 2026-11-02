@@ -47,6 +47,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 42. [Persistent Volume Claims](#42-persistent-volume-claims)
 43. [Storage Classes](#43-storage-classes)
 44. [StatefulSets — Why They Exist](#44-statefulsets--why-they-exist)
+45. [StatefulSets — Creating One](#45-statefulsets--creating-one)
 
 ---
 
@@ -4683,5 +4684,95 @@ Applied to the MySQL scenario:
 - Slaves point their replication config at `mysql-0` by name. Even if the pod behind `mysql-0` crashes and is recreated, **the name `mysql-0` stays the same**, so the slaves' configuration keeps working.
 
 > 📌 This lecture just motivates **why** StatefulSets exist. The actual StatefulSet definition file, headless Services (needed for stable per-pod network identity), and how storage/PVCs work with StatefulSets are covered in the following lectures.
+
+---
+
+## 45. StatefulSets — Creating One
+
+Builds on [Section 44](#44-statefulsets--why-they-exist).
+
+> 📌 A StatefulSet isn't always the right choice — only use one if your app genuinely needs **ordered startup** and/or **stable, unique pod identities**. Otherwise a plain Deployment is simpler.
+
+### Definition File
+Nearly identical to a Deployment — start from a Deployment definition and change two things:
+
+```yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql
+spec:
+  serviceName: mysql-h       # required: name of a headless Service (see next section)
+  replicas: 3
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+        - name: mysql
+          image: mysql
+```
+
+| Change from a Deployment | Detail |
+|---|---|
+| `kind: StatefulSet` | Both **S**s are **uppercase** |
+| `spec.serviceName` | **Required** — the name of a **headless Service** (covered in the next lecture/section) |
+
+### Ordered Behavior (the default)
+
+| Action | Order |
+|---|---|
+| **Create / scale up** | **Sequential**: pod *N* must be **Running and Ready** before pod *N+1* starts |
+| **Scale down** | **Reverse sequential**: the **last** pod (highest ordinal) is removed first |
+| **Delete the StatefulSet** | Pods are deleted in **reverse order** too |
+
+```mermaid
+flowchart LR
+    subgraph "Scale up (0 → 1 → 2)"
+        direction LR
+        A0["pod-0 ready"] --> A1["pod-1 created"] --> A2["pod-1 ready"] --> A3["pod-2 created"]
+    end
+```
+```mermaid
+flowchart RL
+    subgraph "Scale down / delete (2 → 1 → 0)"
+        direction RL
+        B2["pod-2 removed first"] --> B1["then pod-1"] --> B0["then pod-0"]
+    end
+```
+
+- Each pod gets a **stable, unique DNS record** other apps can use to reach it directly (enabled by the headless Service — next section).
+- This ordering is what lets a MySQL-style setup have each new replica clone from the previous one, in both directions.
+
+### Overriding the Order: `podManagementPolicy`
+
+You can keep the **stable identity/naming** benefits of a StatefulSet while **dropping** the ordered startup/shutdown, using `podManagementPolicy`:
+
+```yaml
+spec:
+  podManagementPolicy: Parallel   # default is "OrderedReady"
+  serviceName: mysql-h
+  replicas: 3
+  ...
+```
+
+| Value | Behavior |
+|---|---|
+| `OrderedReady` (default) | Sequential create/scale/delete, as described above |
+| `Parallel` | All pods created/deleted **at once** — no waiting for the previous pod to be Ready. Stable names and DNS records are still kept |
+
+### Commands
+
+| Command | Purpose |
+|---|---|
+| `kubectl create -f statefulset-definition.yaml` | Create the StatefulSet |
+| `kubectl get statefulset` (or `sts`) | List StatefulSets |
+| `kubectl get pods` | Pods appear as `<name>-0`, `<name>-1`, ... and come up **one at a time** |
+| `kubectl scale statefulset <name> --replicas=5` | Scale (ordered, unless `podManagementPolicy: Parallel`) |
+| `kubectl delete statefulset <name>` | Delete (pods removed in reverse order, unless `Parallel`) |
 
 ---
