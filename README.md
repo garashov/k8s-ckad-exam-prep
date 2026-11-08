@@ -59,6 +59,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 54. [ClusterRoles & ClusterRoleBindings](#54-clusterroles--clusterrolebindings)
 55. [Admission Controllers](#55-admission-controllers)
 56. [Admission Webhooks (Mutating & Validating)](#56-admission-webhooks-mutating--validating)
+57. [API Versions](#57-api-versions)
 
 ---
 
@@ -5870,5 +5871,106 @@ webhooks:
 - For a rule targeting `pods` (always namespaced), `scope: "Namespaced"` is just being explicit — it has no practical effect since pods can't be anything else.
 - `scope` matters more when a rule's `resources` could plausibly mean different things, or as a safety habit: explicitly setting `Namespaced` avoids accidentally having the webhook fire for unrelated cluster-scoped objects if the rule is ever broadened.
 - For an in-cluster webhook server: deploy it as a **Deployment**, expose it with a **Service** (e.g. `webhook-service`), and reference that Service (namespace + name) in `clientConfig`.
+
+---
+
+## 57. API Versions
+
+Builds on [Section 51](#51-api-groups) (groups, resources, verbs). This section is about the **maturity levels** within an API group.
+
+### The Three Maturity Stages
+
+| Stage | Name pattern | Enabled by default? | Reliability |
+|---|---|---|---|
+| **Alpha** | `v1alpha1`, `v1alpha2`, ... | ❌ **No** | May lack end-to-end tests, may have bugs, **may be dropped without notice** |
+| **Beta** | `v1beta1`, `v1beta2`, ... | ✅ Yes | Has end-to-end tests, may still have minor bugs; project is **committed** to eventually reaching GA |
+| **GA / Stable** | `v1` (no alpha/beta suffix) | ✅ Yes | Most bugs fixed; covered by **conformance tests**; reliable and supported for many releases |
+
+```mermaid
+flowchart LR
+    A["Alpha<br/>v1alpha1<br/>(off by default, unstable)"] --> B["Beta<br/>v1beta1<br/>(on by default, mostly stable)"] --> G["GA / Stable<br/>v1<br/>(on by default, fully supported)"]
+```
+
+- **Alpha** is for **expert users** testing and giving early feedback — not for general/production use.
+- **Beta** is for users doing **beta testing** and giving feedback on soon-to-stabilize features.
+- **GA** is for **everyone** — the default expectation for production use.
+
+> 📌 Examples at time of recording: `internal.apiserver.k8s.io` (Alpha), the **flow control** API group (Beta); most groups (`apps`, `authentication`, `authorization`, `certificates`, `coordination`, etc.) are GA. These examples will change over time — check your own cluster's versions rather than memorizing specific group names.
+
+### Multiple Versions Can Coexist
+A single API **group** can support **several versions at once** — e.g. `apps` offering `v1alpha1`, `v1beta1`, and `v1` all simultaneously. You could create the **same object** using **any** of these versions in your YAML's `apiVersion` field, and all would work (provided the version is enabled).
+
+**Real example**: `autoscaling` has `v1`, `v2`, `v2beta1`, `v2beta2`; `node.k8s.io` has `v1`, `v1beta1`, `v1alpha1`.
+
+### Preferred Version vs Storage Version
+
+| Term | Meaning |
+|---|---|
+| **Preferred version** | The version used **by default** when retrieving objects — e.g. what `kubectl get` or `kubectl explain` ([Section 11](#11-kubectl-explain--api-resources)) queries/returns, if you don't specify one |
+| **Storage version** | The version an object is **actually converted to and stored as in etcd**, regardless of which `apiVersion` you used to create it |
+
+- Only **one** version can be the preferred version, and only **one** can be the storage version, **per group**.
+- They are **usually the same**, but **don't have to be**.
+- Example: if you create an object with `apiVersion: apps/v1alpha1` but the storage version is `apps/v1`, it gets **converted to `v1`** before being written to etcd.
+
+**Finding the preferred version**: it's listed when you query the group's API directly, e.g. hitting the API server's `/apis/batch` path shows the supported versions (`v1`, `v1beta1`, ...) and marks which one is preferred.
+
+**Finding the storage version**: there is currently **no API or `kubectl` command** that shows this directly. The only way is to inspect the object as actually stored, by **querying etcd directly**:
+```bash
+ETCDCTL_API=3 etcdctl get /registry/deployments/default/blue --cert ... --key ... --cacert ...
+```
+The output reveals the `apiVersion` the object is actually stored with (e.g. `apps/v1`) — same `etcdctl` pattern used in [Section 18](#18-encrypting-secret-data-at-rest-etcd).
+
+### Enabling/Disabling a Specific Version
+
+Alpha versions (and any version you want to turn on/off) are controlled via the `--runtime-config` flag on the kube-apiserver:
+```
+--runtime-config=<group>/<version>=true
+```
+
+**Example** — enable the `internal.apiserver.k8s.io/v1alpha1` API group/version:
+```
+--runtime-config=internal.apiserver.k8s.io/v1alpha1=true
+```
+
+**Multiple entries**, comma-separated:
+```
+--runtime-config=internal.apiserver.k8s.io/v1alpha1=true,batch/v2alpha1=true
+```
+
+On a kubeadm cluster, edit the flag directly in the static pod manifest (`/etc/kubernetes/manifests/kube-apiserver.yaml`):
+```yaml
+spec:
+  containers:
+    - command:
+        - kube-apiserver
+        - --runtime-config=internal.apiserver.k8s.io/v1alpha1=true
+```
+- After editing this flag, the kube-apiserver must be **restarted** for it to take effect (same manifest-edit pattern as [Section 18](#18-encrypting-secret-data-at-rest-etcd) / [Section 49](#49-authentication-in-kubernetes) / [Section 55](#55-admission-controllers) — on kubeadm, saving the manifest triggers an **automatic restart** of the static pod).
+
+### Changing the Preferred and Storage Versions
+
+> ⚠️ Neither of these is something you change casually on a running cluster — both affect **how existing objects are read/written**, so they matter mostly for cluster administrators and API group authors, not day-to-day app deployment. Still useful to know **where** they're controlled:
+
+**Preferred version**: set by the API group's own definition in Kubernetes' source/APIService registration — it is **not** a flag you pass on the kube-apiserver. For **built-in** groups (`apps`, `batch`, etc.), the preferred version ships as part of that Kubernetes release and changes only when you **upgrade Kubernetes**. For a **CRD** (Custom Resource Definition) with multiple versions, you control it yourself:
+```yaml
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+spec:
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: false
+    - name: v1
+      served: true
+      storage: true       # ← the storage version
+```
+- `served: true` means clients may use that version to read/write.
+- The version with **`storage: true`** is the **storage version** — exactly **one** version must have this set to `true`.
+- There is no separate "preferred" flag on a CRD — for CRDs, **the first `served: true` version listed, conventionally the newest, is treated as preferred**; `kubectl` and clients typically default to interacting via whichever version the CRD author put first/marked as the main one.
+
+**Storage version**: for a CRD, flip `storage: true` to a different version in its definition (exactly one version must have it) and **apply the updated CRD** — existing objects are **not rewritten automatically**; Kubernetes converts on next read/write, or you can force a rewrite by re-submitting all existing objects (`kubectl get <resource> -o yaml | kubectl replace -f -`, the same pattern used for re-encrypting Secrets in [Section 18](#18-encrypting-secret-data-at-rest-etcd)).
+
+For **built-in** API groups, you don't control the storage version directly — it's fixed by the Kubernetes version you're running.
 
 ---
