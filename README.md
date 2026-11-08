@@ -55,6 +55,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 50. [KubeConfig](#50-kubeconfig)
 51. [API Groups](#51-api-groups)
 52. [Authorization — Overview](#52-authorization--overview)
+53. [Role-Based Access Control (RBAC)](#53-role-based-access-control-rbac)
 
 ---
 
@@ -5463,5 +5464,119 @@ flowchart LR
     N -->|"not a node request → denies/skips"| RB["RBAC"]
     RB -->|"permission granted"| OK["Access granted — chain stops here"]
 ```
+
+---
+
+## 53. Role-Based Access Control (RBAC)
+
+Builds on [Section 52](#52-authorization--overview) and [Section 51](#51-api-groups) (API groups, resources, verbs).
+
+### Two Objects: Role and RoleBinding
+
+| Object | Purpose |
+|---|---|
+| **Role** | Defines a set of **permissions** (API group + resource + verbs) |
+| **RoleBinding** | **Links** a user (or group/ServiceAccount) to a Role |
+
+### Creating a Role
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: developer
+  namespace: default
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "get", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create"]
+```
+
+| Field | Purpose |
+|---|---|
+| `rules` | A **list** — each item is one rule |
+| `apiGroups` | `""` for the **core group** ([Section 51](#51-api-groups)); named group otherwise (e.g. `"apps"`) |
+| `resources` | The resource(s) this rule applies to (e.g. `pods`, `configmaps`) |
+| `verbs` | The allowed actions (e.g. `list`, `get`, `create`, `delete`, `update`, `watch`) |
+
+> 📌 `resources` always uses the **lowercase, plural API resource name** — the same name shown by `kubectl api-resources` ([Section 11](#11-kubectl-explain--api-resources)) — never the YAML `kind`. So it's `configmaps` (not `ConfigMap`), `pods` (not `Pod`), `deployments` (not `Deployment`).
+
+`kubectl create -f role-definition.yaml`
+
+### Creating a RoleBinding
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: devuser-developer-binding
+  namespace: default
+subjects:
+  - kind: User
+    name: dev-user
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: developer
+  apiGroup: rbac.authorization.k8s.io
+```
+
+| Field | Purpose |
+|---|---|
+| `subjects` | **Who** gets the access (a `User`, `Group`, or `ServiceAccount`) |
+| `roleRef` | **Which Role** to bind them to |
+
+`kubectl create -f rolebinding-definition.yaml`
+
+### Namespace Scope
+
+> ⚠️ **Roles and RoleBindings are namespaced** — they only grant access within **one namespace**.
+
+- The example above gives `dev-user` access to pods/configmaps in the `default` namespace only.
+- To scope to a different namespace, set `metadata.namespace` on **both** the Role and the RoleBinding.
+
+### Commands
+
+| Command | Purpose |
+|---|---|
+| `kubectl get roles` | List Roles (in the current namespace) |
+| `kubectl get rolebindings` | List RoleBindings |
+| `kubectl describe role developer` | See the resources/verbs granted by a Role |
+| `kubectl describe rolebinding devuser-developer-binding` | See the subject/Role of a RoleBinding |
+
+### Checking Access: `kubectl auth can-i`
+
+```bash
+kubectl auth can-i create deployments
+kubectl auth can-i delete nodes
+```
+
+**Impersonating another user** (admin-only) — no need to log in as that user to test their permissions:
+```bash
+kubectl auth can-i create deployments --as dev-user
+# no → not granted
+
+kubectl auth can-i create pods --as dev-user
+# yes → granted
+
+kubectl auth can-i create pods --as dev-user --namespace test
+# no → dev-user has no access in the test namespace
+```
+
+### Restricting to Specific Resource Instances
+
+Add `resourceNames` to a rule to limit it to **named instances** of a resource, instead of all of them:
+
+```yaml
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]
+    resourceNames: ["blue", "orange"]
+```
+- `dev-user` can now only `get`/`list`/`delete` the pods named `blue` and `orange` — not the other pods in the namespace.
 
 ---
