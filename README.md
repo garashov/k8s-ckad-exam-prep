@@ -58,6 +58,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 53. [Role-Based Access Control (RBAC)](#53-role-based-access-control-rbac)
 54. [ClusterRoles & ClusterRoleBindings](#54-clusterroles--clusterrolebindings)
 55. [Admission Controllers](#55-admission-controllers)
+56. [Admission Webhooks (Mutating & Validating)](#56-admission-webhooks-mutating--validating)
 
 ---
 
@@ -5748,5 +5749,126 @@ kube-apiserver -h | grep enable-admission-plugins
 |---|---|
 | `kube-apiserver -h \| grep enable-admission-plugins` | Show admission controllers enabled by default |
 | `kubectl exec -it <kube-apiserver-pod> -n kube-system -- kube-apiserver -h \| grep enable-admission-plugins` | Same, on a kubeadm cluster where the API server runs as a pod |
+
+---
+
+## 56. Admission Webhooks (Mutating & Validating)
+
+Builds on [Section 55](#55-admission-controllers).
+
+### Two Types of Admission Controllers
+
+| Type | Does | Example (built in) |
+|---|---|---|
+| **Validating** | **Allows or rejects** a request, unchanged | `NamespaceExists`/`NamespaceLifecycle` ([Section 55](#55-admission-controllers)) — rejects requests targeting a non-existent namespace |
+| **Mutating** | **Changes the request/object** itself before it's created | `DefaultStorageClass` ([Section 55](#55-admission-controllers)) — if a PVC has no `storageClassName`, it's automatically added |
+
+- Some admission controllers can do **both**.
+- **Order matters: mutating controllers run before validating ones.** This way, anything a mutation adds is available for validation to check. If it were the other way around, e.g. `NamespaceExists` (validating) would always reject a request for a missing namespace, since `NamespaceAutoProvision` (mutating) wouldn't have had a chance to create it first.
+- If **any** admission controller in the chain rejects a request, the whole request is rejected with an error shown to the user.
+
+### Custom Admission Controllers: Webhooks
+Built-in admission controllers are compiled into Kubernetes itself. For **your own custom logic** (your own validation rules or mutations), Kubernetes supports **two special admission controllers**:
+
+| Webhook type | Purpose |
+|---|---|
+| **MutatingAdmissionWebhook** | Calls out to your server to **change** a request |
+| **ValidatingAdmissionWebhook** | Calls out to your server to **allow/reject** a request |
+
+These run **after** all the built-in admission controllers, and call out to **your own server** (hosted inside or outside the cluster) over HTTP(S).
+
+```mermaid
+flowchart LR
+    R["Request"] --> AUTH["Authentication + Authorization"]
+    AUTH --> BUILTIN["Built-in admission controllers"]
+    BUILTIN --> WH["Webhook admission controller"]
+    WH -->|"AdmissionReview JSON"| SRV["Your webhook server<br/>(your own logic)"]
+    SRV -->|"AdmissionReview response:<br/>allowed true/false (+ patch if mutating)"| WH
+    WH --> ETCD["Allowed → persisted to etcd<br/>Rejected → error returned"]
+```
+
+### How the Exchange Works
+1. The webhook admission controller sends an **`AdmissionReview`** object (JSON) to your server — contains the **user**, the **operation type**, the **target object**, and full details of the request.
+2. Your server responds with its **own `AdmissionReview`** object:
+   - `allowed: true` → request proceeds.
+   - `allowed: false` → request is rejected.
+   - For a **mutating** webhook, the response also includes a **JSON patch** describing the change to make.
+
+**Example mutating response**: add a `users` label set to the requesting username.
+- A JSON patch is a **list of operations**: `add`, `remove`, `replace`, `move`, `copy`, `test`.
+- Example operation: `{"op": "add", "path": "/metadata/labels/users", "value": "<username>"}`
+- The patch is sent **base64-encoded** inside the response.
+
+> 📌 **Not exam-relevant to write this code yourself.** You won't be asked to develop a webhook server in the exam — the key takeaway is *what* a webhook server does (receives an AdmissionReview, returns allowed/denied and optionally a patch), not writing one from scratch.
+
+### Setting Up a Webhook: Two Steps
+
+**Step 1 — Deploy your own webhook server.**
+- Can be written in **any language** (Go example in the official Kubernetes docs; could be Python, etc.) — the only requirement is it must accept and respond with the `AdmissionReview` JSON format the API server expects.
+- Can run **outside** the cluster (your own server, reachable by URL), or **inside** the cluster as a Deployment + Service.
+
+**Step 2 — Register it with a webhook configuration object.**
+
+**In-cluster webhook server** (referenced via a Service):
+```yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration        # or MutatingWebhookConfiguration
+metadata:
+  name: pod-policy-webhook
+webhooks:
+  - name: pod-policy.example.com
+    clientConfig:
+      service:
+        namespace: default
+        name: webhook-service
+        path: "/validate"
+      caBundle: <base64-encoded-CA-cert>
+    rules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+        scope: "Namespaced"
+```
+
+**External webhook server** (referenced via a plain URL instead of `service`):
+```yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: pod-policy-webhook
+webhooks:
+  - name: pod-policy.example.com
+    clientConfig:
+      url: "https://my-webhook-server.example.com/validate"
+      caBundle: <base64-encoded-CA-cert>
+    rules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+```
+- `clientConfig` takes **either** `service` **or** `url`, never both — `service` for a server running **inside** the cluster, `url` for one hosted **externally**.
+
+| Field | Purpose |
+|---|---|
+| `kind` | `ValidatingWebhookConfiguration` or `MutatingWebhookConfiguration` |
+| `webhooks[].clientConfig` | **Where** your webhook server is: either a `url` (external server) or a `service` reference (in-cluster Service — namespace/name/path) |
+| `webhooks[].clientConfig.caBundle` | The **CA certificate** (base64-encoded), since the API server talks to the webhook server over **TLS** |
+| `webhooks[].rules` | **When** to call the webhook: `apiGroups`, `apiVersions`, `operations` (`CREATE`, `UPDATE`, `DELETE`, ...), `resources`, `scope` |
+
+- In the example, the webhook is only called for **`CREATE`** requests on **`pods`** — not every request triggers it, only ones matching `rules`.
+
+**`scope`** restricts the rule by **where the resource lives**:
+
+| Value | Matches |
+|---|---|
+| `Namespaced` | Only **namespaced** resources ([Section 54](#54-clusterroles--clusterrolebindings)) — e.g. pods, deployments |
+| `Cluster` | Only **cluster-scoped** resources — e.g. nodes, PersistentVolumes, Namespace objects themselves |
+| `*` | No restriction — matches either (this is the **default** if `scope` is omitted) |
+
+- For a rule targeting `pods` (always namespaced), `scope: "Namespaced"` is just being explicit — it has no practical effect since pods can't be anything else.
+- `scope` matters more when a rule's `resources` could plausibly mean different things, or as a safety habit: explicitly setting `Namespaced` avoids accidentally having the webhook fire for unrelated cluster-scoped objects if the rule is ever broadened.
+- For an in-cluster webhook server: deploy it as a **Deployment**, expose it with a **Service** (e.g. `webhook-service`), and reference that Service (namespace + name) in `clientConfig`.
 
 ---
