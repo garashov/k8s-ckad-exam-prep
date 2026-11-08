@@ -52,6 +52,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 47. [Storage in StatefulSets — Volume Claim Templates](#47-storage-in-statefulsets--volume-claim-templates)
 48. [Security Primitives — Overview](#48-security-primitives--overview)
 49. [Authentication in Kubernetes](#49-authentication-in-kubernetes)
+50. [KubeConfig](#50-kubeconfig)
 
 ---
 
@@ -5139,5 +5140,108 @@ roleRef:
 | 4 | Create a **Role** + **RoleBinding** so the authenticated user is also **authorized** to do something |
 
 > ⚠️ All of this is about **learning the concept**. For real clusters: use **certificates** or a proper external identity provider, never a static clear-text file. This mechanism is also **removed entirely** in Kubernetes v1.19+.
+
+---
+
+## 50. KubeConfig
+
+Builds on [Section 49](#49-authentication-in-kubernetes) (certificate-based auth) and [Section 11](#11-kubectl-explain--api-resources) (`kubectl` basics).
+
+### The Problem It Solves
+Authenticating to the API server directly (e.g. with `curl`) requires passing the server address, client certificate, client key and CA certificate **every time**:
+```bash
+curl https://my-kube-playground:6443/api/v1/pods \
+  --key admin.key --cert admin.crt --cacert ca.crt
+```
+`kubectl` needs the same info (`--server`, `--client-key`, `--client-certificate`, `--certificate-authority`). Typing all of this on every command is tedious — so it's moved into a **KubeConfig file**.
+
+### Where kubectl Looks for It
+- **Default**: `$HOME/.kube/config` — if this exists, you don't need to specify anything; that's why plain `kubectl` commands have worked without extra flags throughout these notes.
+- **Override**: pass `--kubeconfig <path>` to use a different file.
+
+### Structure: Three Sections
+
+A KubeConfig file has **three arrays** (so each can hold multiple entries), plus a top-level `current-context`:
+
+| Section | Holds | Example entries |
+|---|---|---|
+| `clusters` | The Kubernetes clusters you can reach | dev, test, prod, different cloud providers |
+| `users` | The user **credentials** you can authenticate with | admin, a dev user, a prod user — each with their own privileges |
+| `contexts` | **Pairs a user with a cluster** | "use the admin user to access the prod cluster" |
+
+```mermaid
+flowchart LR
+    C["clusters[]<br/>my-kube-playground"] --> CTX["contexts[]<br/>my-kube-admin@my-kube-playground"]
+    U["users[]<br/>my-kube-admin"] --> CTX
+```
+
+> 📌 **This file creates nothing new.** It does not create users, grant permissions, or configure authorization in the cluster — it only tells `kubectl` **which existing credentials to use against which existing cluster**. The actual user and its privileges must already exist (as set up via authentication/RBAC, [Sections 49](#49-authentication-in-kubernetes)/[48](#48-security-primitives--overview)).
+
+### Example File
+
+```yaml
+apiVersion: v1
+kind: Config
+clusters:
+  - name: my-kube-playground
+    cluster:
+      server: https://my-kube-playground:6443
+      certificate-authority: /etc/kubernetes/pki/ca.crt
+users:
+  - name: my-kube-admin
+    user:
+      client-certificate: /etc/kubernetes/pki/users/admin.crt
+      client-key: /etc/kubernetes/pki/users/admin.key
+contexts:
+  - name: my-kube-admin@my-kube-playground
+    context:
+      cluster: my-kube-playground
+      user: my-kube-admin
+current-context: my-kube-admin@my-kube-playground
+```
+
+| Field | Purpose |
+|---|---|
+| `clusters[].cluster.server` | The API server address |
+| `clusters[].cluster.certificate-authority` | Path to the **CA certificate**, to verify the server |
+| `users[].user.client-certificate` / `client-key` | The **user's own** cert/key pair |
+| `contexts[].context.cluster` + `.user` | **Which cluster** + **which user** this context combines |
+| `current-context` | Which context `kubectl` uses **by default** if you don't specify one |
+
+### Commands
+
+| Command | Purpose |
+|---|---|
+| `kubectl config view` | Show the KubeConfig currently in use (clusters, users, contexts, current context) |
+| `kubectl config view --kubeconfig=<path>` | Show a **specific** file instead of the default |
+| `kubectl config use-context <context-name>` | **Switch** the current context — this actually **edits the file**, updating `current-context` |
+| `kubectl config set-cluster / set-credentials / set-context` | Add or update entries from the command line instead of hand-editing YAML |
+| `kubectl config delete-context <name>` | Remove a context |
+
+### Namespaces in a Context
+A context can also pin a **default namespace** to switch into automatically:
+```yaml
+contexts:
+  - name: my-kube-admin@my-kube-playground
+    context:
+      cluster: my-kube-playground
+      user: my-kube-admin
+      namespace: finance
+```
+This is the same mechanism used in [Section 7](#7-namespaces) (`kubectl config set-context --current --namespace=dev`) — that command edits exactly this field.
+
+### Certificate Paths vs Inline Data
+Certificates can be referenced **two ways**:
+
+| Field | Value |
+|---|---|
+| `certificate-authority` / `client-certificate` / `client-key` | A **file path** to the certificate |
+| `certificate-authority-data` / `client-certificate-data` / `client-key-data` | The certificate's **contents**, base64-encoded, directly in the file |
+
+```yaml
+certificate-authority-data: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t...
+```
+- Encode a cert file for the `-data` field: `cat ca.crt | base64 -w 0`
+- Decode an existing `-data` value back to readable text: `echo "<value>" | base64 --decode`
 
 ---
