@@ -54,6 +54,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 49. [Authentication in Kubernetes](#49-authentication-in-kubernetes)
 50. [KubeConfig](#50-kubeconfig)
 51. [API Groups](#51-api-groups)
+52. [Authorization — Overview](#52-authorization--overview)
 
 ---
 
@@ -5276,11 +5277,11 @@ curl https://<master-ip>:6443/api/v1/pods # list pods
 ```mermaid
 flowchart TB
     API["kube-apiserver"]
-    API --> CORE["Core group: /api/v1<br/>(pods, services,<br/> configmaps, secrets,<br/> PV/PVC, ...)"]
-    API --> NAMED["Named groups: /apis/&lt;group&gt;<br/>/&lt;version&gt;"]
-    NAMED --> APPS["apps<br/>(deployments, replicasets,<br/> statefulsets)"]
-    NAMED --> NET["networking.k8s.io<br/>(networkpolicies,<br/> ingresses)"]
-    NAMED --> CERT["certificates.k8s.io<br/>(certificatesigningrequests)"]
+    API --> CORE["Core group: /api/v1<br/>pods, services, configmaps, secrets, PV/PVC, ..."]
+    API --> NAMED["Named groups: /apis/&lt;group&gt;/&lt;version&gt;"]
+    NAMED --> APPS["apps<br/>deployments, replicasets, statefulsets"]
+    NAMED --> NET["networking.k8s.io<br/>networkpolicies, ingresses"]
+    NAMED --> CERT["certificates.k8s.io<br/>certificatesigningrequests"]
 ```
 
 > 📌 This matches `apiVersion` values seen throughout these notes: `v1` → core group (Pods, Services, ConfigMaps, Secrets, PV, PVC — [Sections 4](#4-pods--yaml-definition-files), [8](#8-services--nodeport), [16](#16-configmaps), [17](#17-secrets), [41](#41-persistent-volumes)); `apps/v1` → the `apps` named group (Deployments, ReplicaSets, StatefulSets — [Sections 5](#5-replication-controllers--replicasets), [6](#6-deployments), [45](#45-statefulsets--creating-one)); `networking.k8s.io/v1` → the `networking.k8s.io` named group (NetworkPolicy, Ingress — [Sections 37](#37-network-policies), [38](#38-ingress)); `storage.k8s.io/v1` → StorageClass ([Section 43](#43-storage-classes)).
@@ -5337,5 +5338,130 @@ curl http://localhost:8001/api/v1/pods
 API group → Resources → Verbs
 ```
 This is exactly the structure RBAC rules are built from (`apiGroups`, `resources`, `verbs` — already previewed in the Role example in [Section 49](#49-authentication-in-kubernetes)) — covered in full in the next section on authorization.
+
+---
+
+## 52. Authorization — Overview
+
+Builds on [Section 49](#49-authentication-in-kubernetes) (authentication = *who can get in*). **Authorization** = *what they can do once in*.
+
+### Why It's Needed
+As more people and systems get accounts (other admins, developers, testers, or apps like monitoring tools or CI/CD systems like Jenkins — via usernames/passwords, tokens, certificates, or ServiceAccounts, all from [Section 49](#49-authentication-in-kubernetes)/[Section 22](#22-service-accounts)), you don't want everyone to have the **same** level of access:
+- Developers probably shouldn't modify **cluster config** (nodes, storage, networking) — but should be able to **deploy applications**.
+- A ServiceAccount for an external app should get only the **minimum** access it actually needs.
+- When a cluster is **shared across teams/orgs via namespaces**, users should be restricted to **their own namespace**.
+
+### The Authorization Mechanisms
+
+| Mechanism | What it's for |
+|---|---|
+| **Node Authorizer** | Special-purpose: authorizes requests **from kubelets** |
+| **ABAC** (Attribute-Based Access Control) | Associates a user/group directly with permissions via a policy file |
+| **RBAC** (Role-Based Access Control) | Associates a user/group with a **Role**, which holds the permissions ([Section 53](#53-role-based-access-control-rbac)) |
+| **Webhook** | Outsources the authorization decision to an **external service** |
+| **AlwaysAllow** / **AlwaysDeny** | Trivial modes — allow/deny everything, no checks |
+
+### Node Authorizer
+Handles requests **inside the cluster**: the kubelet on each node talks to the API server to read info about services, endpoints, nodes and pods, and to report node status back.
+
+- These requests are authorized specifically because the requesting user is named `system:node:<node-name>` and belongs to the group **`system:nodes`** (set up via the node's certificate — see certificate-based auth, [Section 49](#49-authentication-in-kubernetes)).
+- Any request matching that identity pattern is granted the specific privileges a kubelet needs.
+
+**What this looks like in a kubelet's certificate** (the part the Node Authorizer checks):
+```
+Subject: CN=system:node:node01, O=system:nodes
+```
+- `CN` (Common Name) = `system:node:<node-name>` → this becomes the **username**.
+- `O` (Organization) = `system:nodes` → this becomes the **group**.
+- No separate policy file to write — the Node Authorizer is **built in**; it recognizes this exact naming pattern and grants the matching kubelet permissions automatically.
+
+### ABAC (Attribute-Based Access Control)
+Associates a **user or group directly** with a set of permissions, defined in a **policy file (JSON)** passed to the API server.
+
+**Example policy file** (`policy.json`, one JSON object per line):
+```json
+{"apiVersion": "abac.authorization.kubernetes.io/v1beta1", "kind": "Policy", "spec": {"user": "dev-user", "namespace": "*", "resource": "pods", "apiGroup": "*"}}
+{"apiVersion": "abac.authorization.kubernetes.io/v1beta1", "kind": "Policy", "spec": {"user": "admin", "namespace": "*", "resource": "*", "apiGroup": "*"}}
+```
+
+| Field | Meaning |
+|---|---|
+| `spec.user` (or `spec.group`) | Who the rule applies to |
+| `spec.namespace` | Which namespace(s) — `*` means all |
+| `spec.resource` | Which resource(s) — `*` means all |
+| `spec.apiGroup` | Which API group(s) ([Section 51](#51-api-groups)) — `*` means all |
+| `spec.readonly` (optional) | If `true`, restricts the user to read-only verbs (`get`, `list`, `watch`) |
+
+Passed to the API server with two flags:
+```
+--authorization-mode=ABAC
+--authorization-policy-file=/path/to/policy.json
+```
+
+> ⚠️ **Hard to maintain**: every permission change means **manually editing the policy file** and **restarting the kube-apiserver**. One entry per user/group, with no reuse between them — contrast with RBAC's reusable Roles, below.
+
+### RBAC (Role-Based Access Control) — the Recommended Approach
+Instead of attaching permissions directly to a user, you:
+1. Define a **Role** (e.g. "developer") with the needed permissions.
+2. **Associate users** with that Role.
+
+```mermaid
+flowchart LR
+    R["Role: developer<br/>(permissions)"] --> U1["dev-user-1"]
+    R --> U2["dev-user-2"]
+    R --> U3["dev-user-3"]
+```
+
+- Updating access for every developer is now **one change to the Role** — it applies to everyone bound to it immediately.
+- This is the **standard, recommended** approach and gets its own full section next ([Section 53](#53-role-based-access-control-rbac)).
+
+### Webhook
+Outsources the authorization decision entirely to an **external service** (e.g. **Open Policy Agent**). Kubernetes calls out with the user and the requested action, and the external service responds **allow/deny**.
+
+**What Kubernetes sends** to the webhook service is a `SubjectAccessReview` object, roughly:
+```json
+{
+  "apiVersion": "authorization.k8s.io/v1",
+  "kind": "SubjectAccessReview",
+  "spec": {
+    "user": "dev-user",
+    "resourceAttributes": {
+      "namespace": "default",
+      "verb": "create",
+      "resource": "pods"
+    }
+  }
+}
+```
+The external service inspects this and replies with `status.allowed: true` or `false`. Configured on the API server with:
+```
+--authorization-mode=Webhook
+--authorization-webhook-config-file=/path/to/webhook-config.yaml
+```
+`webhook-config.yaml` is a **kubeconfig-style file** ([Section 50](#50-kubeconfig)) pointing at the external service's URL and credentials, rather than a policy file like ABAC uses.
+
+### AlwaysAllow / AlwaysDeny
+- **AlwaysAllow**: grants every request, no checks at all.
+- **AlwaysDeny**: denies every request.
+- **`AlwaysAllow` is the default** if `--authorization-mode` isn't set on the kube-apiserver — i.e., **no authorization at all** unless you configure it.
+
+### Configuring Multiple Modes
+
+Set via `--authorization-mode` on the kube-apiserver, as a **comma-separated list**:
+```
+--authorization-mode=Node,RBAC,Webhook
+```
+
+**How the chain works**: modes are tried **in the order listed**.
+- A request goes to the **first** mode.
+- If that mode **denies** (or doesn't apply, e.g. Node Authorizer only handles node requests), the request **moves to the next mode** in the list.
+- As soon as **any** mode **approves**, the chain **stops** — the user is granted access immediately, with no further checks.
+
+```mermaid
+flowchart LR
+    Req["Request"] --> N["Node Authorizer"]
+    N -->|"not a node request → denies/skips"| RB["RBAC"]
+    RB -->|"permission granted"| OK["Access granted — chain stops here"]
+```
 
 ---
