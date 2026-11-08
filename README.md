@@ -61,6 +61,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 56. [Admission Webhooks (Mutating & Validating)](#56-admission-webhooks-mutating--validating)
 57. [API Versions](#57-api-versions)
 58. [API Deprecation Policy](#58-api-deprecation-policy)
+59. [Custom Resource Definitions (CRDs)](#59-custom-resource-definitions-crds)
 
 ---
 
@@ -6032,5 +6033,109 @@ kubectl convert -f old-deployment.yaml --output-version apps/v1
 ```
 - Takes an old manifest and outputs the equivalent definition in the **requested** `apiVersion`.
 - ⚠️ **Not installed by default** — it's a separate **kubectl plugin**, installed the same way as `kubectl` itself (see the Kubernetes docs for the install instructions, same family of tools as `krew`).
+
+---
+
+## 59. Custom Resource Definitions (CRDs)
+
+Builds on [Sections 51](#51-api-groups) and [57](#57-api-versions) (groups, versions).
+
+### Recap: What a Controller Actually Does
+A **resource** (e.g. a Deployment) is just data stored in **etcd** — creating/listing/deleting it only touches that record. The *behavior* — e.g. a Deployment actually creating a ReplicaSet, which creates pods — comes from a **controller**: a background process that continuously **watches** a resource type and makes the cluster match what's defined. Built-in examples: the Deployment controller, ReplicaSet controller, Job controller, etc. — you never had to write these; they ship with Kubernetes.
+
+```mermaid
+flowchart LR
+    ETCD["Resource data in etcd<br/>(e.g. a Deployment object)"] -.->|"watched by"| C["Controller<br/>(background process)"]
+    C -->|"takes action to match desired state"| R["Real changes on the cluster<br/>(e.g. creates a ReplicaSet → pods)"]
+```
+
+### The Goal: a Totally Custom Resource
+Kubernetes lets you define **your own** resource types, for **anything** — the lecture's example is a `FlightTicket` object that should trigger an actual flight booking via an external API when created.
+
+```yaml
+apiVersion: flights.com/v1
+kind: FlightTicket
+metadata:
+  name: my-flight-ticket
+spec:
+  from: Mumbai
+  to: London
+  number: 2
+```
+Without any setup, creating this fails:
+```
+error: no matches for kind "FlightTicket" in version "flights.com/v1"
+```
+Kubernetes has no idea what a `FlightTicket` is — it must be **defined** first.
+
+### Two Separate Pieces Needed
+
+| Piece | Role |
+|---|---|
+| **CustomResourceDefinition (CRD)** | Teaches the API server about the **new resource type** itself — its schema, its group, its versions. Lets you **create/list/delete** the object in etcd |
+| **Custom Controller** | A program you write that **watches** for that resource and performs real actions (e.g. calling an external booking API) |
+
+> 📌 A CRD **alone** does nothing beyond store data in etcd. Without a custom controller, creating a `FlightTicket` object doesn't actually book a flight — it just sits there as inert data.
+
+### Defining the CRD
+
+```yaml
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: flighttickets.flights.com
+spec:
+  scope: Namespaced
+  group: flights.com
+  names:
+    kind: FlightTicket
+    singular: flightticket
+    plural: flighttickets
+    shortNames:
+      - ft
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                from:
+                  type: string
+                to:
+                  type: string
+                number:
+                  type: integer
+                  minimum: 1
+                  maximum: 10
+```
+
+| Field | Purpose |
+|---|---|
+| `apiVersion: apiextensions.k8s.io/v1` | The CRD object's **own** API — fixed, not your custom group |
+| `spec.scope` | `Namespaced` or `Cluster` ([Section 54](#54-clusterroles--clusterrolebindings) — e.g. pods/deployments are namespaced, nodes/PVs/namespaces are not) |
+| `spec.group` | Your custom **API group** (`flights.com`) — this is the part before the `/` in `apiVersion` |
+| `spec.names.kind` | The `kind` used in object YAML (`FlightTicket`) |
+| `spec.names.singular` / `plural` | Display name in `kubectl` output, and the name used by the API/`kubectl api-resources` ([Section 11](#11-kubectl-explain--api-resources)) |
+| `spec.names.shortNames` | A short alias (e.g. `ft`) usable in `kubectl` commands |
+| `spec.versions` | Same Alpha/Beta/GA concept as [Section 57](#57-api-versions) — a resource can have multiple versions as it matures |
+| `versions[].served` | Whether this version can actually be used to read/write objects |
+| `versions[].storage` | **Exactly one** version must have this `true` — the storage version ([Section 57](#57-api-versions)) |
+| `versions[].schema.openAPIV3Schema` | Defines the **allowed fields and types** under `spec` (an OpenAPI v3 schema), plus validations like `minimum`/`maximum` |
+
+- If a value violates the schema (e.g. `number: 20` with `maximum: 10`), the API server **rejects the object** with a validation error.
+
+`kubectl create -f crd-definition.yaml` → once the CRD exists, you can `create`/`get`/`delete` `FlightTicket` objects exactly like any built-in resource.
+
+### What's Still Missing: the Custom Controller
+The CRD only gets you storage + validation in etcd. To make something **actually happen** (call an external API, create related objects, etc.), you need a **custom controller**:
+- A program (commonly written in Go, using client libraries that ship with Kubernetes) that **watches** for create/update/delete events on your custom resource.
+- On each event, it performs the real action — e.g. calling `bookflight.com/api` to book or cancel a ticket.
+
+> 📌 Writing the controller itself is **beyond CKAD scope** (it's real programming against the Kubernetes API) — the exam-relevant takeaway is understanding **what a CRD is**, **what it alone can and can't do**, and that a **controller** is the piece that gives it real behavior. The next lecture covers getting started with building one.
 
 ---
