@@ -51,6 +51,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 46. [Headless Services](#46-headless-services)
 47. [Storage in StatefulSets — Volume Claim Templates](#47-storage-in-statefulsets--volume-claim-templates)
 48. [Security Primitives — Overview](#48-security-primitives--overview)
+49. [Authentication in Kubernetes](#49-authentication-in-kubernetes)
 
 ---
 
@@ -5017,5 +5018,126 @@ flowchart TB
 ```
 
 > 📌 Each of these ([ServiceAccounts](#22-service-accounts), [NetworkPolicies](#37-network-policies)) is covered in its own section in these notes. **Authentication, RBAC, and TLS certificate setup** are covered in upcoming dedicated lectures — add those sections here once available.
+
+---
+
+## 49. Authentication in Kubernetes
+
+Builds on [Section 48](#48-security-primitives--overview) — this is the "Authentication: who?" piece.
+
+### Who Needs to Authenticate
+
+| User type | In scope for this section? |
+|---|---|
+| **Admins / developers** (humans accessing the cluster for admin/deploy tasks) | ✅ Yes |
+| **Robots** (other processes, services, third-party apps accessing the cluster) | ✅ Yes |
+| **End users** (people using the applications *deployed on* the cluster) | ❌ No — secured by the **application itself**, not Kubernetes |
+
+### Kubernetes Does NOT Manage (Human) User Accounts
+
+- There is **no `kubectl create user`**, and **no way to list users** — Kubernetes has no native user-account object.
+- Kubernetes relies on an **external source** to manage human users: a static file, certificates, or a third-party identity service (LDAP, Kerberos, etc.).
+- **ServiceAccounts are the exception** — Kubernetes **does** manage these natively, via the API (see [Section 22](#22-service-accounts)).
+
+### Everything Goes Through the kube-apiserver
+
+Whether via `kubectl` or a direct API call, every request is **authenticated by the kube-apiserver** before being processed. Supported mechanisms:
+
+| Mechanism | Notes |
+|---|---|
+| **Static password/token file** | Simplest to understand, but ⚠️ **insecure** (plain text) and **deprecated since v1.19**, removed in later releases — shown here only to learn the basics |
+| **Certificates** | Covered in the next lecture/section |
+| **Third-party identity providers** | LDAP, Kerberos, etc. |
+
+### Static Password File (deprecated, learning purposes only)
+
+> ⚠️ Deprecated in Kubernetes **v1.19** and **no longer available** in later releases. Not for production, shown for understanding fundamentals only.
+
+**1. Create the user details file** (`password,username,uid[,group]`):
+```csv
+password123,user1,u0001
+password123,user2,u0002
+password123,user3,u0003
+```
+- An optional **4th column** can assign the user to a **group**.
+- A **static token file** works the same way, but with a token instead of a password.
+
+**2. Mount the file into the kube-apiserver static pod** (`/etc/kubernetes/manifests/kube-apiserver.yaml`):
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kube-apiserver
+  namespace: kube-system
+spec:
+  containers:
+    - command:
+        - kube-apiserver
+        - --authorization-mode=Node,RBAC
+        - --basic-auth-file=/tmp/users/user-details.csv
+      image: k8s.gcr.io/kube-apiserver-amd64:v1.11.3
+      name: kube-apiserver
+      volumeMounts:
+        - mountPath: /tmp/users
+          name: usr-details
+          readOnly: true
+  volumes:
+    - hostPath:
+        path: /tmp/users
+        type: DirectoryOrCreate
+      name: usr-details
+```
+- `--basic-auth-file=<path>` tells the API server where to find the user file.
+- `--token-auth-file=<path>` is the equivalent flag for a **static token file**.
+- Same `volumes`/`volumeMounts` pattern as every other case in these notes ([Section 18](#18-encrypting-secret-data-at-rest-etcd) used this exact pattern to mount an encryption config into the same kube-apiserver pod).
+- Saving this file causes kubeadm to **automatically restart** the kube-apiserver static pod (same behavior noted in [Section 18](#18-encrypting-secret-data-at-rest-etcd)).
+
+**3. Authenticating a request**:
+```bash
+# with a password file
+curl -v -k https://localhost:6443/api/v1/pods -u "user1:password123"
+
+# with a token file, as a Bearer token
+curl -v -k https://localhost:6443/api/v1/pods --header "Authorization: Bearer <token>"
+```
+
+**4. Authentication alone isn't enough** — the user also needs **authorization** (RBAC) to actually do anything:
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: default
+  name: pod-reader
+rules:
+  - apiGroups: [""]   # "" = the core API group
+    resources: ["pods"]
+    verbs: ["get", "watch", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: read-pods
+  namespace: default
+subjects:
+  - kind: User
+    name: user1            # case-sensitive
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role              # must be Role or ClusterRole
+  name: pod-reader         # must match the Role/ClusterRole name
+  apiGroup: rbac.authorization.k8s.io
+```
+> 📌 This is a first look at **Role** and **RoleBinding** — the full RBAC topic (authorization) is covered in its own upcoming section.
+
+### Summary
+
+| Step | What's needed |
+|---|---|
+| 1 | Create the static user/token file |
+| 2 | Mount it and pass it to the kube-apiserver via `--basic-auth-file` / `--token-auth-file` |
+| 3 | Authenticate requests with `-u user:pass` or a Bearer token |
+| 4 | Create a **Role** + **RoleBinding** so the authenticated user is also **authorized** to do something |
+
+> ⚠️ All of this is about **learning the concept**. For real clusters: use **certificates** or a proper external identity provider, never a static clear-text file. This mechanism is also **removed entirely** in Kubernetes v1.19+.
 
 ---
