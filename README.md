@@ -56,6 +56,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 51. [API Groups](#51-api-groups)
 52. [Authorization — Overview](#52-authorization--overview)
 53. [Role-Based Access Control (RBAC)](#53-role-based-access-control-rbac)
+54. [ClusterRoles & ClusterRoleBindings](#54-clusterroles--clusterrolebindings)
 
 ---
 
@@ -5578,5 +5579,90 @@ rules:
     resourceNames: ["blue", "orange"]
 ```
 - `dev-user` can now only `get`/`list`/`delete` the pods named `blue` and `orange` — not the other pods in the namespace.
+
+---
+
+## 54. ClusterRoles & ClusterRoleBindings
+
+Builds on [Section 53](#53-role-based-access-control-rbac). Role/RoleBinding are **namespaced**; this section covers the **cluster-scoped** equivalent.
+
+### Namespaced vs Cluster-Scoped Resources
+
+Resources fall into two categories:
+
+| Category | Examples | Behavior |
+|---|---|---|
+| **Namespaced** | pods, replicasets, jobs, deployments, services, secrets, **roles, rolebindings** | Created **within** a namespace (defaults to `default` if unspecified). Every view/update/delete needs the right namespace |
+| **Cluster-scoped** | **nodes**, persistent volumes, **clusterroles, clusterrolebindings**, certificatesigningrequests, **namespaces** (the object itself) | **No namespace** at creation — they exist cluster-wide (e.g. a node can't "belong" to one namespace) |
+
+> 💡 See the **full** list for your cluster with:
+> ```bash
+> kubectl api-resources --namespaced=true    # namespaced resources
+> kubectl api-resources --namespaced=false   # cluster-scoped resources
+> ```
+
+### Why Role/RoleBinding Isn't Enough
+Role and RoleBinding only grant access **within one namespace** — they can't authorize access to **cluster-scoped** resources like nodes or PersistentVolumes, since those don't belong to any namespace at all.
+
+### ClusterRole and ClusterRoleBinding
+Same idea as Role/RoleBinding, but **not namespaced** — used to authorize access to **cluster-scoped** resources.
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cluster-admin-role
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list", "get", "create", "delete"]
+```
+`kubectl create -f clusterrole-definition.yaml`
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cluster-admin-role-binding
+subjects:
+  - kind: User
+    name: cluster-admin-user
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin-role
+  apiGroup: rbac.authorization.k8s.io
+```
+`kubectl create -f clusterrolebinding-definition.yaml`
+
+> 📌 Same structure as Role/RoleBinding ([Section 53](#53-role-based-access-control-rbac)): `rules` (apiGroups/resources/verbs) on the ClusterRole, `subjects`+`roleRef` on the ClusterRoleBinding. Note `roleRef.kind` is `ClusterRole` here, not `Role`.
+
+**Example use cases:**
+- A **cluster-admin** ClusterRole: view/create/delete **nodes**.
+- A **storage-admin** ClusterRole: create **PersistentVolumes** and **PersistentVolumeClaims**.
+
+### Commands
+
+| Command | Purpose |
+|---|---|
+| `kubectl create -f clusterrole-definition.yaml` | Create the ClusterRole |
+| `kubectl create -f clusterrolebinding-definition.yaml` | Create the ClusterRoleBinding |
+| `kubectl get clusterroles` | List ClusterRoles |
+| `kubectl get clusterrolebindings` | List ClusterRoleBindings |
+| `kubectl describe clusterrole <name>` | See its rules |
+| `kubectl describe clusterrolebinding <name>` | See its subject and roleRef |
+
+### ⚠️ Important: ClusterRole Can Also Target Namespaced Resources
+
+ClusterRoles aren't strictly limited to cluster-scoped resources — this is **not a hard rule**:
+
+| | Scope of access granted |
+|---|---|
+| **Role** (namespaced) targeting `pods` | Access to pods in **one specific namespace** only |
+| **ClusterRole** targeting `pods` | Access to pods in **every namespace across the cluster** |
+
+Use this deliberately when you want a permission to apply **cluster-wide** rather than to a single namespace (e.g. a monitoring tool that needs to read pods everywhere).
+
+> 💡 Kubernetes ships with a number of **built-in ClusterRoles** by default (e.g. `cluster-admin`, `admin`, `edit`, `view`) — inspect them with `kubectl get clusterroles` and `kubectl describe clusterrole <name>` on a running cluster.
 
 ---
