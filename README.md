@@ -50,6 +50,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 45. [StatefulSets — Creating One](#45-statefulsets--creating-one)
 46. [Headless Services](#46-headless-services)
 47. [Storage in StatefulSets — Volume Claim Templates](#47-storage-in-statefulsets--volume-claim-templates)
+48. [Security Primitives — Overview](#48-security-primitives--overview)
 
 ---
 
@@ -4960,5 +4961,61 @@ If a pod **fails and is recreated or rescheduled**, the StatefulSet does **not**
 > 📌 This mirrors the **sticky identity** behavior from [Section 44](#44-statefulsets--why-they-exist) (stable pod names) — StatefulSets give you both **stable names** and **stable storage** for each ordinal position.
 
 > 💡 Deleting a StatefulSet does **not** automatically delete its PVCs (by design, to protect data) — clean them up manually with `kubectl delete pvc` if you really want the storage gone too.
+
+---
+
+## 48. Security Primitives — Overview
+
+> High-level map of Kubernetes security topics, before the detailed lectures on each.
+
+### Layer 0: Securing the Hosts Themselves
+Before anything Kubernetes-specific: secure the underlying machines (physical or virtual) that make up the cluster.
+- Disable **root access**.
+- Disable **password-based authentication** — SSH **key-based** auth only.
+- General host/infrastructure hardening.
+
+> ⚠️ If the hosts are compromised, **everything** running on them is compromised, regardless of any Kubernetes-level security. This is the foundation everything else sits on.
+
+### Layer 1: Securing the kube-apiserver
+The **kube-apiserver** is the center of all operations — `kubectl` and any direct API access both go through it. Controlling access to it is the **first line of defense**. Two separate questions:
+
+| Question | Mechanism |
+|---|---|
+| **Who** can access the cluster? | **Authentication** |
+| **What** can they do once in? | **Authorization** |
+
+#### Authentication
+Ways to prove identity to the API server:
+- **Certificates**
+- Integration with **external providers** (e.g. LDAP)
+- For **machines/applications**: **ServiceAccounts** ([Section 22](#22-service-accounts))
+
+#### Authorization
+Once authenticated, what a user/account is **allowed to do**:
+- **RBAC (Role-Based Access Control)** — the main mechanism: users/accounts associated with **Roles** that grant specific permissions.
+- Other authorization modules exist too: **ABAC** (Attribute-Based Access Control), **Node Authorizer**, **Webhook** authorization.
+
+### Layer 2: Securing Cluster Communication (TLS)
+All communication **between cluster components** is secured with **TLS encryption**:
+- etcd, kube-controller-manager, kube-scheduler, kube-apiserver (control plane)
+- kubelet, kube-proxy (worker nodes)
+
+> 📌 This involves setting up and managing **certificates** between every pair of communicating components — a significant topic on its own (mostly CKA territory, but good to know exists for CKAD).
+
+### Layer 3: Securing Communication Between Applications (Pod-to-Pod)
+By **default**, all pods can reach all other pods in the cluster (the Kubernetes all-allow default — [Section 37](#37-network-policies)). To restrict this, use **NetworkPolicies** ([Section 37](#37-network-policies)).
+
+### Summary Map
+
+```mermaid
+flowchart TB
+    H["Host security<br/>(SSH keys, no root, no password auth)"] --> A1["kube-apiserver access"]
+    A1 --> AUTH["Authentication: who?<br/>certs, external providers, ServiceAccounts"]
+    A1 --> AUTHZ["Authorization: what can they do?<br/>RBAC, ABAC, Node Authorizer, Webhook"]
+    A1 --> TLS["TLS between all components<br/>etcd, API server, controller-manager,<br/>scheduler, kubelet, kube-proxy"]
+    A1 --> NP["NetworkPolicies<br/>pod-to-pod traffic control"]
+```
+
+> 📌 Each of these ([ServiceAccounts](#22-service-accounts), [NetworkPolicies](#37-network-policies)) is covered in its own section in these notes. **Authentication, RBAC, and TLS certificate setup** are covered in upcoming dedicated lectures — add those sections here once available.
 
 ---
