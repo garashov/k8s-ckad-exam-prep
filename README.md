@@ -53,6 +53,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 48. [Security Primitives — Overview](#48-security-primitives--overview)
 49. [Authentication in Kubernetes](#49-authentication-in-kubernetes)
 50. [KubeConfig](#50-kubeconfig)
+51. [API Groups](#51-api-groups)
 
 ---
 
@@ -5243,5 +5244,98 @@ certificate-authority-data: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t...
 ```
 - Encode a cert file for the `-data` field: `cat ca.crt | base64 -w 0`
 - Decode an existing `-data` value back to readable text: `echo "<value>" | base64 --decode`
+
+---
+
+## 51. API Groups
+
+> Prerequisite for authorization/RBAC (next section) — RBAC rules are written in terms of API groups, resources and verbs.
+
+### What Is the Kubernetes API?
+Every interaction with the cluster — `kubectl`, direct REST calls, anything — goes through the **kube-apiserver**. Its URLs are organized into **paths/groups** by purpose:
+
+```bash
+curl https://<master-ip>:6443/version    # cluster version
+curl https://<master-ip>:6443/api/v1/pods # list pods
+```
+
+| Top-level API area | Purpose |
+|---|---|
+| `/version` | Cluster version |
+| `/metrics`, `/healthz` | Cluster health monitoring |
+| `/logs` | Integration with third-party logging tools |
+| `/api` and `/apis` | The **cluster functionality** APIs — this section's focus |
+
+### Core Group vs Named Group
+
+| Group | Path prefix | Contains |
+|---|---|---|
+| **Core group** | `/api/v1` | Foundational resources: namespaces, pods, replication controllers, events, endpoints, nodes, bindings, PVs, PVCs, ConfigMaps, secrets, services, etc. |
+| **Named group(s)** | `/apis/<group>/<version>` | Everything newer and more organized: `apps`, `extensions`, `networking.k8s.io`, `storage.k8s.io`, `rbac.authorization.k8s.io`, etc. All new features are added here going forward |
+
+```mermaid
+flowchart TB
+    API["kube-apiserver"]
+    API --> CORE["Core group: /api/v1<br/>(pods, services,<br/> configmaps, secrets,<br/> PV/PVC, ...)"]
+    API --> NAMED["Named groups: /apis/&lt;group&gt;<br/>/&lt;version&gt;"]
+    NAMED --> APPS["apps<br/>(deployments, replicasets,<br/> statefulsets)"]
+    NAMED --> NET["networking.k8s.io<br/>(networkpolicies,<br/> ingresses)"]
+    NAMED --> CERT["certificates.k8s.io<br/>(certificatesigningrequests)"]
+```
+
+> 📌 This matches `apiVersion` values seen throughout these notes: `v1` → core group (Pods, Services, ConfigMaps, Secrets, PV, PVC — [Sections 4](#4-pods--yaml-definition-files), [8](#8-services--nodeport), [16](#16-configmaps), [17](#17-secrets), [41](#41-persistent-volumes)); `apps/v1` → the `apps` named group (Deployments, ReplicaSets, StatefulSets — [Sections 5](#5-replication-controllers--replicasets), [6](#6-deployments), [45](#45-statefulsets--creating-one)); `networking.k8s.io/v1` → the `networking.k8s.io` named group (NetworkPolicy, Ingress — [Sections 37](#37-network-policies), [38](#38-ingress)); `storage.k8s.io/v1` → StorageClass ([Section 43](#43-storage-classes)).
+
+### Resources and Verbs
+Within each API group are **resources** (e.g. `deployments` within `apps`), and each resource supports a set of **verbs** — the actions you can perform on it:
+
+```
+API group (e.g. apps) → Resource (e.g. deployments) → Verbs (list, get, create, delete, update, watch, ...)
+```
+
+These exact terms — **group, resource, verb** — are the building blocks of RBAC rules (next section).
+
+### Finding Which Group a Resource Belongs To
+- The **Kubernetes API reference** documentation shows each object's API group at the top of its page.
+- On your **own cluster**: hit the API server root to see available groups, then drill into a named group to see its resources:
+  ```bash
+  curl https://<master-ip>:6443/apis -k --cert ... --key ... --cacert ...
+  ```
+  or more simply:
+  ```bash
+  kubectl api-resources   # Section 11 — lists every resource with its API group
+  kubectl api-versions    # lists every group/version combination available
+  ```
+
+### Accessing the API Directly
+Hitting the API server with plain `curl` gets rejected (except a few open endpoints like `/version`) because **no authentication** is provided:
+```bash
+curl https://<master-ip>:6443/api/v1/pods    # ❌ likely unauthorized
+```
+
+**Option 1 — pass certificates manually:**
+```bash
+curl https://<master-ip>:6443/api/v1/pods \
+  --key admin.key --cert admin.crt --cacert ca.crt
+```
+
+**Option 2 — `kubectl proxy`:** starts a local HTTP proxy that automatically uses the credentials from your **KubeConfig** ([Section 50](#50-kubeconfig)), so you don't pass certs yourself:
+```bash
+kubectl proxy
+# proxy now listening on localhost:8001
+curl http://localhost:8001/api/v1/pods
+```
+
+> ⚠️ **`kube-proxy` ≠ `kubectl proxy`** — easy to confuse, completely different things:
+
+| | Purpose |
+|---|---|
+| **kube-proxy** | A cluster networking component: enables connectivity between pods and Services across nodes (separate, deeper topic) |
+| **`kubectl proxy`** | A local HTTP proxy, started by the `kubectl` CLI, to conveniently reach the API server using your KubeConfig credentials |
+
+### Summary
+```
+API group → Resources → Verbs
+```
+This is exactly the structure RBAC rules are built from (`apiGroups`, `resources`, `verbs` — already previewed in the Role example in [Section 49](#49-authentication-in-kubernetes)) — covered in full in the next section on authorization.
 
 ---
