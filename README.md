@@ -57,6 +57,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 52. [Authorization — Overview](#52-authorization--overview)
 53. [Role-Based Access Control (RBAC)](#53-role-based-access-control-rbac)
 54. [ClusterRoles & ClusterRoleBindings](#54-clusterroles--clusterrolebindings)
+55. [Admission Controllers](#55-admission-controllers)
 
 ---
 
@@ -5664,5 +5665,88 @@ ClusterRoles aren't strictly limited to cluster-scoped resources — this is **n
 Use this deliberately when you want a permission to apply **cluster-wide** rather than to a single namespace (e.g. a monitoring tool that needs to read pods everywhere).
 
 > 💡 Kubernetes ships with a number of **built-in ClusterRoles** by default (e.g. `cluster-admin`, `admin`, `edit`, `view`) — inspect them with `kubectl get clusterroles` and `kubectl describe clusterrole <name>` on a running cluster.
+
+---
+
+## 55. Admission Controllers
+
+Builds on [Sections 49](#49-authentication-in-kubernetes)–[54](#54-clusterroles--clusterrolebindings) (authentication + RBAC authorization).
+
+### Where They Fit in the Request Pipeline
+
+```mermaid
+flowchart LR
+    R["Request<br/>(e.g. kubectl create pod)"] --> AUTH["Authentication<br/>(certificates, etc.)"]
+    AUTH --> AUTHZ["Authorization<br/>(RBAC: is this user allowed?)"]
+    AUTHZ --> AC["Admission Controllers"]
+    AC --> ETCD["Persisted to etcd<br/>→ object created"]
+```
+
+### Why RBAC Alone Isn't Enough
+RBAC only answers: **can this user perform this API operation** (verb) **on this resource**? It works purely at the "who can do what" level and can't inspect or change **the content** of a request. Things RBAC **cannot** do:
+- Reject a pod spec using an image from an **untrusted registry**, or using the `:latest` tag.
+- Reject a container configured to **run as root**.
+- Restrict which Linux **capabilities** a container may request.
+- **Require** certain labels to always be present in `metadata`.
+
+**Admission controllers** fill this gap: they inspect (and can **modify**) the actual request content, and can also trigger side effects, **after** authentication/authorization but **before** the object is persisted.
+
+### What Admission Controllers Can Do
+- **Validate** a request and **reject** it if it doesn't meet a policy.
+- **Mutate** the request itself (change what's actually stored).
+- Trigger **additional backend operations** as a side effect of the request.
+
+### Built-in Admission Controllers (examples)
+
+| Admission Controller | What it does |
+|---|---|
+| `AlwaysPullImages` | Forces every pod creation to **always pull** the image (ignores any cached local copy) |
+| `DefaultStorageClass` | If a PVC is created with **no `storageClassName`**, automatically adds the **default** StorageClass ([Section 43](#43-storage-classes)) |
+| `EventRateLimit` | Caps how many requests the API server will process at once, to prevent it being flooded |
+| `NamespaceExists` ⚠️ deprecated | Rejects requests targeting a namespace that **doesn't exist** |
+| `NamespaceAutoProvision` ⚠️ deprecated, not enabled by default | **Automatically creates** the namespace if it doesn't exist, instead of rejecting |
+| `NamespaceLifecycle` (current, replaces both above) | Rejects requests to non-existent namespaces **and** prevents deletion of the protected `default`, `kube-system`, `kube-public` namespaces |
+
+> 📌 `NamespaceExists` and `NamespaceAutoProvision` are **deprecated** — their behavior is now combined into **`NamespaceLifecycle`**, which is enabled by default on current clusters.
+
+### Worked Example: `NamespaceExists` / `NamespaceLifecycle`
+
+```bash
+kubectl run mypod --image=nginx --namespace=blue
+# Error: namespaces "blue" not found
+```
+Flow: the request authenticates → is authorized (user allowed to create pods) → reaches the `NamespaceLifecycle` (or legacy `NamespaceExists`) admission controller → it checks whether `blue` exists → it doesn't → **request rejected**, before ever reaching etcd.
+
+If `NamespaceAutoProvision` were enabled instead, the same request would instead **auto-create** the `blue` namespace and let the pod creation proceed.
+
+### Viewing and Changing Enabled Admission Controllers
+
+**List what's currently enabled:**
+```bash
+kube-apiserver -h | grep enable-admission-plugins
+```
+> 📌 On a **kubeadm** cluster, the kube-apiserver runs as a **static pod**, so run this command **inside that pod**:
+> ```bash
+> kubectl exec -it <kube-apiserver-pod-name> -n kube-system -- kube-apiserver -h | grep enable-admission-plugins
+> ```
+
+**Enable additional admission controllers**, add/edit the `--enable-admission-plugins` flag:
+```
+--enable-admission-plugins=NodeRestriction,NamespaceAutoProvision
+```
+- Non-kubeadm setup: update the kube-apiserver **service** definition, then restart it.
+- **kubeadm setup**: edit `/etc/kubernetes/manifests/kube-apiserver.yaml` directly — saving it triggers kubeadm to **automatically restart** the static pod (same pattern as [Section 18](#18-encrypting-secret-data-at-rest-etcd) and [Section 49](#49-authentication-in-kubernetes)).
+
+**Disable** admission controllers with the equivalent flag:
+```
+--disable-admission-plugins=<name1>,<name2>
+```
+
+### Commands
+
+| Command | Purpose |
+|---|---|
+| `kube-apiserver -h \| grep enable-admission-plugins` | Show admission controllers enabled by default |
+| `kubectl exec -it <kube-apiserver-pod> -n kube-system -- kube-apiserver -h \| grep enable-admission-plugins` | Same, on a kubeadm cluster where the API server runs as a pod |
 
 ---
