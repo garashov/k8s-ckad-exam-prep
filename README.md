@@ -60,6 +60,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 55. [Admission Controllers](#55-admission-controllers)
 56. [Admission Webhooks (Mutating & Validating)](#56-admission-webhooks-mutating--validating)
 57. [API Versions](#57-api-versions)
+58. [API Deprecation Policy](#58-api-deprecation-policy)
 
 ---
 
@@ -5972,5 +5973,64 @@ spec:
 **Storage version**: for a CRD, flip `storage: true` to a different version in its definition (exactly one version must have it) and **apply the updated CRD** — existing objects are **not rewritten automatically**; Kubernetes converts on next read/write, or you can force a rewrite by re-submitting all existing objects (`kubectl get <resource> -o yaml | kubectl replace -f -`, the same pattern used for re-encrypting Secrets in [Section 18](#18-encrypting-secret-data-at-rest-etcd)).
 
 For **built-in** API groups, you don't control the storage version directly — it's fixed by the Kubernetes version you're running.
+
+---
+
+## 58. API Deprecation Policy
+
+Builds on [Section 57](#57-api-versions) (Alpha/Beta/GA, preferred/storage versions). This answers: **why support multiple versions at once, and when can an old one be removed?**
+
+### The Four Rules
+
+| Rule | Statement |
+|---|---|
+| **1** | API elements may only be **removed by incrementing the API version** — a field/resource can't just vanish from the *same* version |
+| **2** | Objects must **round-trip** between supported versions in a release **without information loss** (except whole resources that genuinely don't exist in some version) |
+| **3** | A version **cannot be deprecated until a newer, at-least-as-stable** version exists (GA can deprecate Beta/Alpha; **Alpha/Beta can never deprecate a GA version**) |
+| **4a** | Once deprecated, a version must still be **supported** for: **GA** → no less than **12 months or 3 releases** (whichever is longer); **Beta** → no less than **9 months or 3 releases**; **Alpha** → **0 releases** (no guaranteed support at all) |
+| **4b** | The **preferred/storage version** may not advance until a release has shipped that supports **both** the new version **and** the previous one |
+
+### Rule 1 in Practice: Removing a Field
+
+Say `codecloud.com/v1alpha1` has a `Webinar` resource, and it's later decided to remove it.
+- ❌ Can't just delete it from `v1alpha1`.
+- ✅ Must **bump to `v1alpha2`** and drop it there instead — `v1alpha1` keeps `Webinar` as it was.
+- This means **both** versions must be supported for a while, and users must **migrate their YAML files** from the old `apiVersion` to the new one.
+
+### Rule 2 in Practice: Round-Tripping
+
+If `v1alpha2` adds a new field (e.g. `duration`) that didn't exist in `v1alpha1`:
+- Converting an object **`v1alpha1` → `v1alpha2` → back to `v1alpha1`** must produce the **same** object as the original `v1alpha1` version.
+- So an **equivalent field** must be added to `v1alpha1` too (even if unused there), so the round-trip doesn't silently lose data.
+
+### Full Lifecycle Walkthrough (fictional `codecloud.com` API group)
+
+| Kubernetes release | Versions available | Preferred/storage | Notes |
+|---|---|---|---|
+| **X** | `v1alpha1` | `v1alpha1` | First release — only version, so it's automatically preferred/storage |
+| **X+1** | `v1alpha2` only | `v1alpha2` | `v1alpha1` **dropped** — allowed per Rule 4a (Alpha needs **0 releases** of support). Release notes must mention this |
+| **X+2** | `v1beta1` only | `v1beta1` | First Beta — again, the prior Alpha version (`v1alpha2`) isn't required to carry over |
+| **X+3** | `v1beta1` **+** `v1beta2` | still `v1beta1` | First Beta-to-Beta transition: **both** must now be supported (Rule 4a: Beta needs ≥9 months/3 releases). `v1beta1` is now **deprecated** (shows a warning) but **not yet removed**. Preferred/storage **can't advance yet** (Rule 4b — this is the first release supporting both) |
+| **X+4** | `v1beta1` + `v1beta2` | now `v1beta2` | Second release supporting both → preferred/storage **can now advance** to `v1beta2` |
+| **X+5** | `v1beta1` + `v1beta2` + `v1` (GA) | still `v1beta2` | GA ships, but preferred/storage stays `v1beta2` for one more release (Rule 4b again); `v1beta1` **and** `v1beta2` are now deprecated |
+| **X+6** | `v1beta2` + `v1` | now `v1` | `v1beta1` removed (3 releases of deprecation support completed: X+3, X+4, X+5) — preferred/storage advances to `v1` |
+| **X+7** | `v1beta2` + `v1` | `v1` | No change — `v1beta2` still finishing its 3-release support window |
+| **X+8** | `v1` only | `v1` | `v1beta2` finally removed |
+
+### Rule 3 in Practice: Can a New Alpha Deprecate GA?
+
+Say `v2alpha1` is released once `v1` is GA. **Can `v1` be deprecated now?**
+- ❌ **No.** Rule 3: a version can only be deprecated by one **at least as stable**. `v2alpha1` (Alpha) is **less** stable than `v1` (GA).
+- `v2` must go through its **own** full lifecycle (`v2alpha1` → `v2alpha2` → `v2beta1` → `v2beta2` → `v2`) before a `v2` **GA** release can finally deprecate `v1`.
+
+### `kubectl convert`: Migrating Old Manifests
+
+When an old API version is removed, existing YAML files using it must be updated. The `kubectl convert` plugin automates this:
+
+```bash
+kubectl convert -f old-deployment.yaml --output-version apps/v1
+```
+- Takes an old manifest and outputs the equivalent definition in the **requested** `apiVersion`.
+- ⚠️ **Not installed by default** — it's a separate **kubectl plugin**, installed the same way as `kubectl` itself (see the Kubernetes docs for the install instructions, same family of tools as `krew`).
 
 ---
