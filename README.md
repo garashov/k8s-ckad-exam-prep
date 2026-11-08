@@ -62,6 +62,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 57. [API Versions](#57-api-versions)
 58. [API Deprecation Policy](#58-api-deprecation-policy)
 59. [Custom Resource Definitions (CRDs)](#59-custom-resource-definitions-crds)
+60. [Developing Custom Controllers](#60-developing-custom-controllers)
 
 ---
 
@@ -6137,5 +6138,47 @@ The CRD only gets you storage + validation in etcd. To make something **actually
 - On each event, it performs the real action — e.g. calling `bookflight.com/api` to book or cancel a ticket.
 
 > 📌 Writing the controller itself is **beyond CKAD scope** (it's real programming against the Kubernetes API) — the exam-relevant takeaway is understanding **what a CRD is**, **what it alone can and can't do**, and that a **controller** is the piece that gives it real behavior. The next lecture covers getting started with building one.
+
+---
+
+## 60. Developing Custom Controllers
+
+Builds on [Section 59](#59-custom-resource-definitions-crds). Covers the **missing piece** from that section: how a custom controller actually gets built.
+
+> ⭐ **Exam scope note (from the lecture itself)**: writing a custom controller is **not expected** on the CKAD exam — it needs real coding/Go knowledge. What **is** fair game: working with **CRDs** themselves ([Section 59](#59-custom-resource-definitions-crds)), and **using existing controllers/operators** already deployed on a cluster. Read this section for understanding, not for hands-on exam prep.
+
+### What a Controller Is, Concretely
+Any process/code that runs in a **loop**, continuously watching the Kubernetes API for changes to a specific object type (e.g. `FlightTicket`), and reacting to them (e.g. calling an external flight-booking API to book/edit/cancel a ticket).
+
+### Why Not "Just" Write It in Python (or any language)?
+Technically possible — query the API server, watch for changes, call out to your external system — but:
+- Naively **polling** the API repeatedly is **expensive**.
+- You'd have to build your **own caching and queuing** mechanisms from scratch to do it efficiently and reliably.
+
+### Why Go Is the Usual Choice
+The **Kubernetes Go client** provides libraries (e.g. **shared informers**) that already implement efficient **caching** and **queuing** for watching resources — this is why most custom controllers (and the Kubernetes source code itself) are written in **Go**.
+
+### High-Level Build Process
+
+```mermaid
+flowchart LR
+    A["Clone sample-controller<br/>(GitHub template repo)"] --> B["Customize controller.go<br/>with your own logic"]
+    B --> C["Build the Go code"]
+    C --> D["Run it locally<br/>(pointed at a KubeConfig)"]
+    D --> E["Package as a Docker image"]
+    E --> F["Deploy into the cluster<br/>as a Pod/Deployment"]
+```
+
+1. Install **Go**.
+2. Clone the **`sample-controller`** GitHub repository (an official starting template).
+3. Edit `controller.go` with your custom logic (e.g. calling the flight-booking API on create/update/delete).
+4. **Build** and **run** the code — pass it a **KubeConfig** ([Section 50](#50-kubeconfig)) so it can authenticate to the API server, same as `kubectl` would.
+5. Once running, it watches for `FlightTicket` events and performs the real action (API calls to book/cancel).
+6. For ongoing use: **containerize** it (build a Docker image — [Section 12](#12-docker-images--dockerfile)) and run it **inside the cluster** as a **Pod** or **Deployment**, rather than running it manually each time.
+
+### Takeaway
+- **CRD** ([Section 59](#59-custom-resource-definitions-crds)) = defines the custom resource type.
+- **Custom controller** (this section) = the code that gives that resource real behavior.
+- Together, these are the foundation of **Operators** (covered next).
 
 ---
