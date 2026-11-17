@@ -5575,6 +5575,14 @@ flowchart LR
     RB -->|"permission granted"| OK["Access granted — chain stops here"]
 ```
 
+### Checking Which Modes Are Configured
+
+On a kubeadm cluster, read the static pod manifest:
+```bash
+cat /etc/kubernetes/manifests/kube-apiserver.yaml | grep authorization-mode
+```
+- If `--authorization-mode` doesn't appear at all, the cluster is running the **default**: `AlwaysAllow`.
+
 ---
 
 ## 53. Role-Based Access Control (RBAC)
@@ -5640,6 +5648,77 @@ roleRef:
 | `roleRef` | **Which Role** to bind them to |
 
 `kubectl create -f rolebinding-definition.yaml`
+
+> 📌 **Where does `subjects[].name` (e.g. `dev-user`) actually come from?** For a client-certificate login, it's the **certificate's Subject CN (Common Name)** — e.g. a cert with `Subject: CN=dev-user` makes `dev-user` the username, whatever that cert/key pair is *labeled* as. This is **not** the same as the `name:` field under `users:` in your KubeConfig ([Section 50](#50-kubeconfig)) — that name is only a **local label** `kubectl` uses to pick which `client-certificate`/`client-key` to send; it's never sent to the API server and RBAC never sees it. People often set the KubeConfig label to match the cert's CN for clarity, but nothing enforces that — only the cert's CN matters for RBAC.
+
+### How Role and RoleBinding Relate
+
+- **One `Role` manifest = one Role.** Its `rules` list can hold many permission rules, but that's still a single Role object (one `metadata.name`). To define **several different Roles**, you write **several separate `Role` documents** (separate files, or separate YAML documents in one file separated by `---`).
+- **One `RoleBinding` manifest = one RoleBinding**, but its `subjects` field is a **list** — so one RoleBinding **can** attach the same Role to **multiple users at once** (and even mix `User`, `Group`, `ServiceAccount` entries together).
+- There's no 1:1 rule between any of these: one Role can have several RoleBindings pointing at it, and one RoleBinding can list several subjects.
+
+**Example — defining two Roles in one file:**
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: developer
+  namespace: default
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "get", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: tester
+  namespace: default
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "get"]
+```
+
+**Example — one RoleBinding, several subjects, all bound to the same Role:**
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: developer-team-binding
+  namespace: default
+subjects:
+  - kind: User
+    name: dev-user-1
+    apiGroup: rbac.authorization.k8s.io
+  - kind: User
+    name: dev-user-2
+    apiGroup: rbac.authorization.k8s.io
+  - kind: ServiceAccount
+    name: ci-bot
+    namespace: default
+roleRef:
+  kind: Role
+  name: developer
+  apiGroup: rbac.authorization.k8s.io
+```
+
+**Example — binding a `Group` instead of individual users** (useful if your identity source already groups users — adding/removing someone from the group changes their access with no RBAC edit needed):
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: developers-group-binding
+  namespace: default
+subjects:
+  - kind: Group
+    name: developers
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: developer
+  apiGroup: rbac.authorization.k8s.io
+```
 
 ### Namespace Scope
 
