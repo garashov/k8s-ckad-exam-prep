@@ -6285,3 +6285,55 @@ flowchart LR
 - Together, these are the foundation of **Operators** (covered next).
 
 ---
+
+## 61. Operators
+
+Builds on [Sections 59](#59-custom-resource-definitions-crds) and [60](#60-developing-custom-controllers) (CRD + custom controller).
+
+> ⭐ **Exam scope note (from the lecture itself)**: no exam questions expected on Operators specifically — the curriculum focuses on **CRDs**. This section is a conceptual add-on, good to recognize but not deep hands-on material.
+
+### The Problem Operators Solve
+So far, a CRD and a custom controller are **two separate things** you set up manually:
+1. Create the CRD.
+2. Create resources using it.
+3. Separately deploy the custom controller (as a Pod/Deployment).
+
+The **Operator framework** packages **both** (CRD + controller) together as **one deployable unit**. Installing an operator (e.g. a "flight operator") automatically creates the CRD, lets you create its custom resources, and deploys the controller — all from one install step.
+
+```mermaid
+flowchart LR
+    O["Operator<br/>(single deployable package)"] --> CRD["CRD<br/>(the custom resource type)"]
+    O --> CTRL["Custom Controller<br/>(deployed as a Deployment)"]
+```
+
+### Operators Do More Than Just "Deploy the App"
+A real operator typically automates the **full lifecycle** of managing an application — everything a **human operator** would otherwise do by hand:
+
+| Task | Example (etcd Operator) |
+|---|---|
+| Install | Deploys an etcd cluster by watching an `EtcdCluster` CRD |
+| Maintain | Keeps the cluster running/healthy |
+| **Backup** | A separate **backup operator** component, triggered by creating a CRD for it |
+| **Restore** | A separate **restore operator** component, same pattern |
+| Fix issues | Automated remediation of common problems |
+
+> 📌 This is the key insight: an operator isn't just "a CRD + a controller that creates pods" — it encodes **operational know-how** (backup/restore/upgrade/repair) as code, triggered by creating/updating custom resources.
+
+### OperatorHub
+A catalog of ready-made operators for popular applications: **etcd**, **MySQL**, **Prometheus**, **Grafana**, **Argo CD**, **Istio**, and many more.
+
+Installing an operator from OperatorHub is typically:
+1. Install the **Operator Lifecycle Manager (OLM)** (a one-time cluster prerequisite).
+2. Install the **specific operator** you want.
+
+That's it — the operator then manages its application's full lifecycle going forward.
+
+### Takeaway
+
+| Concept | What it is |
+|---|---|
+| **CRD** ([Section 59](#59-custom-resource-definitions-crds)) | Defines a new custom resource type |
+| **Custom Controller** ([Section 60](#60-developing-custom-controllers)) | Code that watches that resource and acts on it |
+| **Operator** (this section) | **CRD + Controller packaged together**, often with extra operational logic (backup, restore, scaling, upgrades) for managing a specific application's full lifecycle |
+
+---
