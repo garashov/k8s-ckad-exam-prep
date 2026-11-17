@@ -63,6 +63,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 58. [API Deprecation Policy](#58-api-deprecation-policy)
 59. [Custom Resource Definitions (CRDs)](#59-custom-resource-definitions-crds)
 60. [Developing Custom Controllers](#60-developing-custom-controllers)
+61. [Operators](#61-operators)
 
 ---
 
@@ -5057,7 +5058,7 @@ Whether via `kubectl` or a direct API call, every request is **authenticated by 
 | Mechanism | Notes |
 |---|---|
 | **Static password/token file** | Simplest to understand, but ⚠️ **insecure** (plain text) and **deprecated since v1.19**, removed in later releases — shown here only to learn the basics |
-| **Certificates** | Covered in the next lecture/section |
+| **Certificates** | See [Section 50](#50-kubeconfig) — covered there alongside KubeConfig, since every certificate path lives in that file |
 | **Third-party identity providers** | LDAP, Kerberos, etc. |
 
 ### Static Password File (deprecated, learning purposes only)
@@ -5155,7 +5156,60 @@ roleRef:
 
 ## 50. KubeConfig
 
-Builds on [Section 49](#49-authentication-in-kubernetes) (certificate-based auth) and [Section 11](#11-kubectl-explain--api-resources) (`kubectl` basics).
+Builds on [Section 49](#49-authentication-in-kubernetes) (authentication) and [Section 11](#11-kubectl-explain--api-resources) (`kubectl` basics).
+
+### How Certificates Actually Work (not in the course, but necessary background)
+
+Every `client-certificate` / `client-key` / `certificate-authority` path used in this section's KubeConfig examples comes from the **same small, self-made PKI** — not from a paid external authority like you'd buy for a public website.
+
+> 💰 **These certificates are free.** They're generated locally with a tool like `openssl`, signed by a **Certificate Authority (CA) you create yourself** for the cluster. No internet connection or third party (like Let's Encrypt) is involved.
+
+**The idea**: a CA is just a key pair. Its *private* key can **sign** other certificates, vouching for them. Anyone holding the CA's *public* certificate can then **verify** that a given certificate was really signed by that CA — pure math, no external lookup needed.
+
+```mermaid
+flowchart LR
+    CA["CA key pair<br/>(ca.key = secret, ca.crt = public)"] -->|signs| U["dev-user's certificate<br/>(developer-user.crt)"]
+    API["kube-apiserver<br/>(trusts ca.crt via --client-ca-file)"] -->|verifies signature using ca.crt| U
+```
+
+**1. Create the cluster's CA (done once):**
+```bash
+openssl genrsa -out ca.key 2048
+openssl req -new -key ca.key -subj "/CN=KUBERNETES-CA" -out ca.csr
+openssl x509 -req -in ca.csr -signkey ca.key -CAcreateserial -out ca.crt
+```
+- `ca.key` = the CA's **private** key — kept secret, used only to sign other certificates.
+- `ca.crt` = the CA's **public** certificate — distributed everywhere that needs to **verify** identities (e.g. `/etc/kubernetes/pki/ca.crt`, referenced by every component's `certificate-authority` field).
+
+**2. Create and sign a certificate for a user** (e.g. `dev-user`):
+```bash
+openssl genrsa -out dev-user.key 2048
+openssl req -new -key dev-user.key -subj "/CN=dev-user/O=developers" -out dev-user.csr
+openssl x509 -req -in dev-user.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out developer-user.crt -days 365
+```
+| Field in the `-subj` | Becomes |
+|---|---|
+| `CN` (Common Name) | The **username** Kubernetes sees (`dev-user`) |
+| `O` (Organization) | The **group** the user belongs to (`developers`) — this is exactly how kubelets get the `system:nodes` group ([Section 52](#52-authorization--overview)) |
+
+The last command is the key step: signing `dev-user`'s request **with the CA's private key** produces `developer-user.crt` — a certificate that cryptographically proves "the CA vouches this key belongs to `dev-user`."
+
+**3. Why the API server trusts it**: the kube-apiserver is started with `--client-ca-file=/etc/kubernetes/pki/ca.crt`. When a request arrives with `developer-user.crt`, the server checks whether it was really signed by the CA it trusts (`ca.crt`). If the signature checks out, the identity inside the cert (`CN=dev-user`, `O=developers`) is accepted — **no external call, no database lookup**, just cryptographic verification.
+
+**4. Mapping this to a KubeConfig** (see the example file further down this section):
+```yaml
+users:
+  - name: dev-user
+    user:
+      client-certificate: /etc/kubernetes/pki/users/dev-user/developer-user.crt   # dev-user's signed cert
+      client-key: /etc/kubernetes/pki/users/dev-user/dev-user.key                 # dev-user's private key (proves ownership)
+clusters:
+  - name: my-kube-playground
+    cluster:
+      certificate-authority: /etc/kubernetes/pki/ca.crt                           # the CA to trust
+```
+
+> 📌 This whole trust chain is a **closed loop you create and fully control** for your own cluster — nothing like it needs to be purchased, registered, or validated externally.
 
 ### The Problem It Solves
 Authenticating to the API server directly (e.g. with `curl`) requires passing the server address, client certificate, client key and CA certificate **every time**:
@@ -5223,8 +5277,57 @@ current-context: my-kube-admin@my-kube-playground
 | Command | Purpose |
 |---|---|
 | `kubectl config view` | Show the KubeConfig currently in use (clusters, users, contexts, current context) |
-| `kubectl config view --kubeconfig=<path>` | Show a **specific** file instead of the default |
+| `kubectl config view --kubeconfig=<path>` | **View** a specific file instead of the default — read-only, doesn't change what `kubectl` actually uses |
+| `kubectl config current-context` | Show just the **current context's name** |
 | `kubectl config use-context <context-name>` | **Switch** the current context — this actually **edits the file**, updating `current-context` |
+
+### Actually Switching to a Different KubeConfig File
+
+`--kubeconfig=<path>` on a single command only affects **that one command** — it doesn't persist. To make `kubectl` **use** a different file for every subsequent command, pick one:
+
+| Method | How |
+|---|---|
+| **Replace the default file** | Copy/move your file to `$HOME/.kube/config` (the path `kubectl` reads by default) |
+| **Set the `KUBECONFIG` environment variable** | `export KUBECONFIG=/path/to/other-config` — persists for the rest of the shell session |
+| **Merge multiple files** | `export KUBECONFIG=~/.kube/config:/path/to/other-config` (colon-separated) — `kubectl config view` then shows a **merged** view of all contexts from every listed file, and you can `use-context` to switch between any of them |
+
+> 📌 `KUBECONFIG` only affects the **current shell**. Add the `export` line to your shell profile (`~/.bashrc`, `~/.zshrc`) to make it permanent.
+
+**Making it permanent, step by step** (without touching `~/.kube/config` or moving the file):
+
+```bash
+# 1. Add the export to your shell's startup file (persists across new shells/reboots)
+echo 'export KUBECONFIG=/root/my-kube-config' >> ~/.bashrc
+
+# 2. Apply it to the CURRENT shell too (new shells pick it up automatically,
+#    but your existing session won't until you source it)
+source ~/.bashrc
+
+# 3. Verify it actually took effect
+echo $KUBECONFIG
+# → /root/my-kube-config
+
+kubectl config view
+# → should show the contents of my-kube-config, not the default ~/.kube/config
+
+kubectl config current-context
+# → the current-context value from my-kube-config
+```
+- If `echo $KUBECONFIG` prints nothing, the `export` wasn't added correctly or `~/.bashrc` wasn't sourced — re-check step 1 and re-run step 2.
+- Opening a **new** terminal and running `echo $KUBECONFIG` again confirms it survives new sessions (and, by extension, reboots) without needing to `source` manually each time.
+
+### `--kubeconfig` Works on Any `config` Subcommand
+
+`--kubeconfig=<path>` isn't limited to `view` — it targets **that exact file** for whichever `kubectl config` subcommand you run, including ones that **write** to it:
+
+```bash
+kubectl config get-contexts --kubeconfig=/root/my-kube-config     # inspect contexts in that file
+kubectl config use-context <context-name> --kubeconfig=/root/my-kube-config  # switch current-context IN that file
+```
+
+- This reads **and writes** `/root/my-kube-config` directly — `~/.kube/config` (the default) is left **completely untouched**.
+- Useful when a task hands you a specific file and says not to touch the default config or move the given file: just point every command at it with `--kubeconfig=<path>`, including `use-context`.
+- `kubectl config get-contexts` (no `--kubeconfig`) lists contexts from whatever `kubectl` would normally use (default file, or `$KUBECONFIG` if set) — add `--kubeconfig=<path>` to inspect/modify a **different** file instead.
 | `kubectl config set-cluster / set-credentials / set-context` | Add or update entries from the command line instead of hand-editing YAML |
 | `kubectl config delete-context <name>` | Remove a context |
 
