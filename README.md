@@ -6490,9 +6490,9 @@ spec:
 
 ### Changing the Preferred and Storage Versions
 
-> ⚠️ Neither of these is something you change casually on a running cluster — both affect **how existing objects are read/written**, so they matter mostly for cluster administrators and API group authors, not day-to-day app deployment. Still useful to know **where** they're controlled:
+> ⚠️ **For built-in API groups (`apps`, `batch`, `networking.k8s.io`, etc.): NO changes are possible, ever — full stop.** There is no flag, no config file, no `kubectl` command, nothing you as a cluster operator can set to change either the preferred or the storage version of a built-in group. Both are **hardcoded into that Kubernetes release's source code**. The **only** way either value changes is by **upgrading (or downgrading) the cluster's Kubernetes version** to a release where the Kubernetes project itself moved it — that's a side effect of the upgrade, not something you configure. As a cluster operator, you have **no lever to pull here at all** for built-in groups.
 
-**Preferred version**: set by the API group's own definition in Kubernetes' source/APIService registration — it is **not** a flag you pass on the kube-apiserver. For **built-in** groups (`apps`, `batch`, etc.), the preferred version ships as part of that Kubernetes release and changes only when you **upgrade Kubernetes**. For a **CRD** (Custom Resource Definition) with multiple versions, you control it yourself:
+**The one exception — CRDs (Custom Resource Definitions) you own.** For a CRD with multiple versions, you **do** control both, via its `versions` list:
 ```yaml
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
@@ -6506,12 +6506,8 @@ spec:
       storage: true       # ← the storage version
 ```
 - `served: true` means clients may use that version to read/write.
-- The version with **`storage: true`** is the **storage version** — exactly **one** version must have this set to `true`.
+- The version with **`storage: true`** is the **storage version** — exactly **one** version must have this set to `true`. Flip it to a different version and **apply the updated CRD** to change it. Existing objects are **not rewritten automatically** — Kubernetes converts on next read/write, or you can force a rewrite by re-submitting all existing objects (`kubectl get <resource> -o yaml | kubectl replace -f -`, the same pattern used for re-encrypting Secrets in [Section 18](#18-encrypting-secret-data-at-rest-etcd)).
 - There is no separate "preferred" flag on a CRD — for CRDs, **the first `served: true` version listed, conventionally the newest, is treated as preferred**; `kubectl` and clients typically default to interacting via whichever version the CRD author put first/marked as the main one.
-
-**Storage version**: for a CRD, flip `storage: true` to a different version in its definition (exactly one version must have it) and **apply the updated CRD** — existing objects are **not rewritten automatically**; Kubernetes converts on next read/write, or you can force a rewrite by re-submitting all existing objects (`kubectl get <resource> -o yaml | kubectl replace -f -`, the same pattern used for re-encrypting Secrets in [Section 18](#18-encrypting-secret-data-at-rest-etcd)).
-
-For **built-in** API groups, you don't control the storage version directly — it's fixed by the Kubernetes version you're running.
 
 ---
 
@@ -6570,7 +6566,26 @@ When an old API version is removed, existing YAML files using it must be updated
 kubectl convert -f old-deployment.yaml --output-version apps/v1
 ```
 - Takes an old manifest and outputs the equivalent definition in the **requested** `apiVersion`.
-- ⚠️ **Not installed by default** — it's a separate **kubectl plugin**, installed the same way as `kubectl` itself (see the Kubernetes docs for the install instructions, same family of tools as `krew`).
+- By default this just **prints** the converted YAML to the screen — it doesn't touch the original file.
+
+**Saving the converted output to a new file**, redirect with `>`:
+```bash
+kubectl convert -f /root/ingress-old.yaml --output-version networking.k8s.io/v1 > /root/ingress-new.yaml
+```
+- `-f` — the old manifest to convert (here, an old `Ingress` definition).
+- `--output-version` — the target `apiVersion` (here, the current `networking.k8s.io/v1` — see [Section 38](#38-ingress)).
+- `> /root/ingress-new.yaml` — saves the converted result to a **new** file rather than printing it, leaving `ingress-old.yaml` untouched. You'd then `kubectl apply -f /root/ingress-new.yaml` to actually create/update the object with the up-to-date version.
+- ⚠️ **Not installed by default** — it's a separate **kubectl plugin**, installed the same way as `kubectl` itself.
+
+**Installing `kubectl convert`** (Linux, amd64 — adjust the OS/arch for other platforms):
+```bash
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl-convert"
+sudo install -o root -g root -m 0755 kubectl-convert /usr/local/bin/kubectl-convert
+kubectl convert --help
+```
+- Downloads the plugin binary matching the **current stable** Kubernetes release.
+- `install -o root -g root -m 0755` places it on the `PATH` as `/usr/local/bin/kubectl-convert`, owned by root with executable permissions — the standard way `kubectl` plugins (named `kubectl-<name>`) are installed so `kubectl convert` can find and run it.
+- `kubectl convert --help` confirms it's installed and working.
 
 ---
 
