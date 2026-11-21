@@ -6111,7 +6111,11 @@ kube-apiserver -h | grep enable-admission-plugins
 
 ### Admission Controllers That Need Extra Configuration (not just a flag)
 
-Most built-in admission controllers are **self-contained** — add their name to `--enable-admission-plugins` and they just work (e.g. `NodeRestriction`, `AlwaysPullImages`). But a few need their **own configuration file**, because they must know things the plugin name alone can't express — e.g. **where an external service is**, **what credentials to use to reach it**, or **tunable thresholds**. `ImagePolicyWebhook` is a good worked example: it calls out to an **external image-scanning webhook** on every pod creation to allow/deny the image, so it needs to be told the webhook's URL and TLS details somewhere.
+Most built-in admission controllers are **self-contained** — add their name to `--enable-admission-plugins` and they just work (e.g. `NodeRestriction`, `AlwaysPullImages`). But **a specific category** of built-in plugins need their **own configuration file**, because they must know things the plugin name alone can't express — e.g. **where an external service is**, **what credentials to use to reach it**, or **tunable thresholds/defaults**.
+
+> 📌 **This is a *category* of plugins, not a one-off quirk of a single plugin.** `ImagePolicyWebhook` (used below as the worked example) needs this file chain because it calls out to an **external image-scanning webhook** and needs to be told its URL/certs. But the **same `--admission-control-config-file` → `AdmissionConfiguration` → plugin-specific-YAML mechanism** is shared by other built-in plugins that also need non-trivial config, e.g. `EventRateLimit` (rate-limit thresholds), `PodNodeSelector` and `PodTolerationRestriction` (per-namespace defaults). Any plugin needing config **beyond** a simple on/off switch uses this same chain — `ImagePolicyWebhook` is just one example of it, not the only plugin that works this way.
+>
+> This is also a **completely different mechanism** from [Section 56](#56-admission-webhooks-mutating--validating)'s `ValidatingWebhookConfiguration`/`MutatingWebhookConfiguration` — those need **no `--enable-admission-plugins` entry and no config-file chain at all**. `ValidatingAdmissionWebhook` and `MutatingAdmissionWebhook` are **generic, already-enabled-by-default** admission controllers; you register **your own** webhooks for **any** resource/logic simply by creating a `ValidatingWebhookConfiguration` object directly — no flag, no `AdmissionConfiguration` file. `ImagePolicyWebhook` here, by contrast, is one **specific, pre-built plugin** (written by the Kubernetes project, doing only image-policy checks) that happens to also talk to an external webhook — it just reaches that webhook through the older, file-based configuration path instead of the newer, object-based one.
 
 ```mermaid
 flowchart LR
@@ -6250,6 +6254,41 @@ flowchart LR
 - Can be written in **any language** (Go example in the official Kubernetes docs; could be Python, etc.) — the only requirement is it must accept and respond with the `AdmissionReview` JSON format the API server expects.
 - Can run **outside** the cluster (your own server, reachable by URL), or **inside** the cluster as a Deployment + Service.
 
+**The webhook server must serve HTTPS** — the API server only ever calls it over TLS, never plain HTTP. That means the server needs its own **certificate and private key**, and these need to exist **before** you can fill in `caBundle` in Step 2.
+
+**Creating the cert/key for the webhook server** — mechanically the **same three-step `openssl` pattern** as signing a user certificate ([Section 49](#49-authentication-in-kubernetes)): generate a key, generate a CSR with a `-subj`, sign it with a CA.
+```bash
+openssl genrsa -out webhook-server-tls.key 2048
+openssl req -new -key webhook-server-tls.key -subj "/CN=webhook-server.webhook-demo.svc" -out webhook-server-tls.csr
+openssl x509 -req -in webhook-server-tls.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out webhook-server-tls.crt -days 365
+```
+
+> 📌 **This is a server certificate, not a user certificate — the `CN` answers a different question.** Same signing mechanics as [Section 49](#49-authentication-in-kubernetes)'s `dev-user` example, but what the `CN` is **for** is different:
+>
+> | | `dev-user`'s cert ([Section 49](#49-authentication-in-kubernetes)) | Webhook server's cert (here) |
+> |---|---|---|
+> | Proves | **Identity** — who is making the request | **Hostname** — which server you're actually talking to |
+> | `CN` becomes | The **username** RBAC checks (`subjects[].name` must match) | The server's **hostname**, checked by TLS hostname validation |
+> | Must equal | Whatever username the RoleBinding expects | The **exact** in-cluster Service DNS address the API server will connect to (e.g. `webhook-server.webhook-demo.svc`) |
+>
+> If the webhook server's `CN`/SAN doesn't match the address the API server actually connects to, the connection fails with a **hostname-verification error** — even if the CA signed it correctly. Same signing step, answering a completely different question.
+
+Once the `.crt`/`.key` exist, load them into the cluster as a **TLS Secret**:
+```bash
+kubectl create secret tls webhook-server-tls \
+  --cert=/root/keys/webhook-server-tls.crt \
+  --key=/root/keys/webhook-server-tls.key \
+  --namespace=webhook-demo
+```
+- This is the same `kubernetes.io/tls` Secret type from [Section 38](#38-ingress) (`kubectl create secret tls`, holding `tls.crt` + `tls.key`) — same command, same purpose (give a server its HTTPS certificate), just a different consumer (a webhook server pod instead of an Ingress controller).
+- The webhook server's **Deployment** mounts this Secret as a volume (same `volumes`/`volumeMounts` + `secret.secretName` pattern as [Section 17](#17-secrets)) so its code can load the cert/key at startup and serve HTTPS.
+
+**Where `caBundle` (Step 2) comes from**: it's the **CA certificate** that **signed** the webhook server's cert above, base64-encoded:
+```bash
+cat ca.crt | base64 -w 0
+```
+Paste that output as the value of `caBundle` — this is how the **API server** knows to **trust** the webhook server's certificate when it connects (it checks the server's cert was signed by this CA, the same validation principle as [Section 50](#50-kubeconfig)'s `certificate-authority-data`).
+
 **Step 2 — Register it with a webhook configuration object.**
 
 **In-cluster webhook server** (referenced via a Service):
@@ -6312,6 +6351,65 @@ webhooks:
 
 - For a rule targeting `pods` (always namespaced), `scope: "Namespaced"` is just being explicit — it has no practical effect since pods can't be anything else.
 - `scope` matters more when a rule's `resources` could plausibly mean different things, or as a safety habit: explicitly setting `Namespaced` avoids accidentally having the webhook fire for unrelated cluster-scoped objects if the rule is ever broadened.
+
+**Example where `scope` actually changes behavior** — a webhook validating **PersistentVolume** creation. `persistentvolumes` is a **cluster-scoped** resource ([Section 54](#54-clusterroles--clusterrolebindings)), so this rule only makes sense with `scope: "Cluster"`:
+```yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: pv-policy-webhook
+webhooks:
+  - name: pv-policy.example.com
+    clientConfig:
+      service:
+        namespace: default
+        name: webhook-service
+        path: "/validate-pv"
+      caBundle: <base64-encoded-CA-cert>
+    rules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["persistentvolumes"]
+        scope: "Cluster"
+```
+- With `scope: "Cluster"`, this rule only ever matches `persistentvolumes` objects themselves (cluster-scoped) — it will **never** fire for anything namespaced, even if `resources` were ever broadened to include a namespaced type by mistake.
+- Using `scope: "*"` here would be harmless in practice too (since `persistentvolumes` has no namespaced variant), but `Cluster` is the more precise, self-documenting choice — it states the intent explicitly rather than leaving it implicit.
+
+**Example where `scope` genuinely changes which requests get caught** — some built-in resource **kinds** can be requested at **two different API paths**, one namespaced and one cluster-wide, and a webhook rule matching that resource name sees **both** unless `scope` narrows it down. A clear case: listing/watching **`events`**. The `events` resource exists both as:
+- a **namespaced** call — `GET /api/v1/namespaces/default/events` (events scoped to one namespace), and
+- a **cluster-wide** call — `GET /api/v1/events` (events across **all** namespaces at once, no namespace in the path).
+
+```yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: events-policy-webhook
+webhooks:
+  - name: events-policy.example.com
+    clientConfig:
+      service:
+        namespace: default
+        name: webhook-service
+        path: "/validate-events"
+      caBundle: <base64-encoded-CA-cert>
+    rules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["events"]
+        scope: "Namespaced"       # <- try removing this line and compare
+```
+
+| `scope` value on this rule | Which `events` creation requests actually trigger the webhook |
+|---|---|
+| `scope: "Namespaced"` | Only requests made **within a specific namespace's path** |
+| `scope: "Cluster"` | Only requests made via the **cluster-wide path** (no namespace in the request path) |
+| `scope: "*"` (or omitted) | **Both** — every `events` creation, regardless of which path it came in through |
+
+- Here, **removing** `scope: "Namespaced"` from this exact rule **does** change behavior: the webhook would start firing for the cluster-wide `events` path too, which it previously never saw.
+- This is the distinction the PV example couldn't show, because `persistentvolumes` only ever has **one** path (cluster-scoped) to begin with — there was nothing for `scope` to exclude. `events` has **both**, so `scope` is doing real, visible filtering work here.
+
 - For an in-cluster webhook server: deploy it as a **Deployment**, expose it with a **Service** (e.g. `webhook-service`), and reference that Service (namespace + name) in `clientConfig`.
 
 ---
