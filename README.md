@@ -6109,6 +6109,90 @@ kube-apiserver -h | grep enable-admission-plugins
 | `kube-apiserver -h \| grep enable-admission-plugins` | Show admission controllers enabled by default |
 | `kubectl exec -it <kube-apiserver-pod> -n kube-system -- kube-apiserver -h \| grep enable-admission-plugins` | Same, on a kubeadm cluster where the API server runs as a pod |
 
+### Admission Controllers That Need Extra Configuration (not just a flag)
+
+Most built-in admission controllers are **self-contained** — add their name to `--enable-admission-plugins` and they just work (e.g. `NodeRestriction`, `AlwaysPullImages`). But a few need their **own configuration file**, because they must know things the plugin name alone can't express — e.g. **where an external service is**, **what credentials to use to reach it**, or **tunable thresholds**. `ImagePolicyWebhook` is a good worked example: it calls out to an **external image-scanning webhook** on every pod creation to allow/deny the image, so it needs to be told the webhook's URL and TLS details somewhere.
+
+```mermaid
+flowchart LR
+    APISERVER["kube-apiserver"] -->|"--admission-control-config-file"| AC["AdmissionConfiguration<br/>(admission-configuration.yaml)"]
+    AC -->|"path: points to"| PC["Plugin config<br/>(imagepolicy-conf.yaml)"]
+    PC -->|"kubeConfigFile: points to"| KC["KubeConfig-style file<br/>(kubeconf.yaml)"]
+    KC -->|"server: the webhook URL<br/>+ certs to authenticate"| WH["External webhook service"]
+```
+
+**1. `AdmissionConfiguration`** — tells the API server where to find a given plugin's own config file:
+```yaml
+apiVersion: apiserver.config.k8s.io/v1
+kind: AdmissionConfiguration
+plugins:
+  - name: ImagePolicyWebhook
+    path: /etc/kubernetes/imgvalidation/imagepolicy-conf.yaml
+```
+
+**2. The plugin's own config file** — `ImagePolicyWebhook`'s specific settings:
+```yaml
+imagePolicy:
+  kubeConfigFile: /etc/kubernetes/imgvalidation/kubeconf.yaml
+  allowTTL: 50       # seconds to cache an "allow" response
+  denyTTL: 50        # seconds to cache a "deny" response
+  retryBackoff: 500  # ms between retries if the webhook is unreachable
+  defaultAllow: false # fail CLOSED: if the webhook is unreachable, DENY (not allow)
+```
+> ⚠️ `defaultAllow: true` means **fail-open**: if the webhook backend is down/unreachable, images are **allowed anyway** — a serious gap if the whole point is to block unscanned/bad images. Set `defaultAllow: false` (fail-**closed**) unless you have a specific reason to prefer availability over security here.
+
+**3. A KubeConfig-style file** — exactly the structure from [Section 50](#50-kubeconfig), used here purely to tell the **API server** how to reach the **webhook**, not a user's cluster:
+```yaml
+apiVersion: v1
+kind: Config
+clusters:
+  - name: checker_webhook
+    cluster:
+      certificate-authority: /etc/kubernetes/imgvalidation/webhook.crt
+      server: https://image-checker-webhook.default.svc:1323/image_policy   # the actual webhook endpoint
+contexts:
+  - name: checker_validator
+    context:
+      cluster: checker_webhook
+      user: api-server
+current-context: checker_validator
+users:
+  - name: api-server
+    user:
+      client-certificate: /etc/kubernetes/pki/front-proxy-client.crt
+      client-key: /etc/kubernetes/pki/front-proxy-client.key
+```
+> 📌 This file is **not** about authenticating a *person* to the cluster — it's the API server authenticating **itself** to the external webhook, re-using the same YAML shape as a normal KubeConfig because that's a convenient existing format, not because a user context is involved.
+
+**4. Wire it all into the kube-apiserver static pod manifest** (`/etc/kubernetes/manifests/kube-apiserver.yaml`) — **three changes**, all at once:
+
+```yaml
+spec:
+  containers:
+    - command:
+        - kube-apiserver
+        - --enable-admission-plugins=NodeRestriction,ImagePolicyWebhook   # A: enable the plugin, same as always
+        - --admission-control-config-file=/etc/kubernetes/imgvalidation/admission-configuration.yaml   # B: point at the AdmissionConfiguration
+      volumeMounts:
+        - mountPath: /etc/kubernetes/imgvalidation   # C: mount the config directory into the container
+          name: imgvalidation
+          readOnly: true
+  volumes:
+    - name: imgvalidation                            # C: the matching volume (hostPath, same pattern as Section 18)
+      hostPath:
+        path: /etc/kubernetes/imgvalidation
+        type: DirectoryOrCreate
+```
+
+| Change | Purpose |
+|---|---|
+| **A** — `--enable-admission-plugins` | Same mechanism as any other admission controller ([Section 55](#55-admission-controllers) above) — just the plugin's name added to the list |
+| **B** — `--admission-control-config-file` | **New, extra flag** — tells the API server where the `AdmissionConfiguration` object (from step 1) lives, so it knows this plugin needs extra config at all |
+| **C** — `volumeMounts` + `volumes` | The config files (steps 1–3) live on the **host filesystem**, so they must be **mounted into the kube-apiserver container** to be readable — identical `hostPath` volume pattern already used for mounting an encryption config in [Section 18](#18-encrypting-secret-data-at-rest-etcd) |
+
+> 📌 **So, to directly answer "is this different from the simple case?" — yes.** A plugin like `NodeRestriction` needs **only** step **A**. A plugin like `ImagePolicyWebhook` needs **A + B + C**, because it depends on external configuration (a webhook URL, certs, tunable behavior) that can't be expressed as a simple flag value — that extra config has to live in its own file(s), referenced via `--admission-control-config-file`, and made readable to the container via a volume mount.
+> Saving the manifest, as always, triggers kubeadm to **automatically restart** the static pod — the same restart behavior as every other kube-apiserver manifest edit in these notes.
+
 ---
 
 ## 56. Admission Webhooks (Mutating & Validating)
