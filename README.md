@@ -66,6 +66,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 61. [Operators](#61-operators)
 62. [Helm — Why It Exists](#62-helm--why-it-exists)
 63. [Installing Helm](#63-installing-helm)
+64. [Helm Concepts & Commands](#64-helm-concepts--commands)
 
 ---
 
@@ -6908,5 +6909,145 @@ sudo apt-get install helm
 > 📌 **Why `--classic` with snap**: by default, snap packages run in a **strict, isolated sandbox** with limited access to the host filesystem. `--classic` installs Helm with **relaxed confinement**, giving it normal access to the host — specifically so it can **read your KubeConfig** (`~/.kube/config`) to know how to reach your cluster. Without it, Helm might not be able to see that file.
 
 - Helm is also installable on **Windows** and **macOS** — always check the **official Helm documentation** for the current install instructions for your OS, as package manager commands/sources can change over time.
+
+---
+
+## 64. Helm Concepts & Commands
+
+Builds on [Sections 62](#62-helm--why-it-exists)/[63](#63-installing-helm).
+
+### Templates + Values = a Chart
+
+Starting point: separate YAML files for WordPress's components (`deployment.yaml`, `secret.yaml`, `pvc.yaml`, `service.yaml`, etc.) — each defining one object, as usual.
+
+**Step 1 — Turn hardcoded values into variables (templates).** Anything likely to change between deployments (image version, disk size, admin password) gets replaced with a `{{ }}` placeholder:
+```yaml
+# deployment.yaml (templated)
+spec:
+  containers:
+    - image: "wordpress:{{ .Values.image.tag }}"
+```
+```yaml
+# pvc.yaml (templated)
+spec:
+  resources:
+    requests:
+      storage: "{{ .Values.storageSize }}"
+```
+
+**Step 2 — Define the actual values in one place: `values.yaml`.**
+```yaml
+image:
+  tag: "5.8"
+storageSize: "20Gi"
+wordpressPassword: "changeme"
+```
+
+- Anyone deploying the app now customizes it by editing **one file** (`values.yaml`) instead of hunting through every template.
+- **Templates + `values.yaml`, together, form a Helm Chart.**
+
+### Chart Structure
+
+A chart also includes a **`Chart.yaml`** — metadata **about the chart itself**, not the app's runtime config:
+
+```yaml
+apiVersion: v2
+name: Wordpress
+version: 9.0.3
+description: Web publishing platform for building blogs and websites.
+keywords:
+  - wordpress
+  - cms
+  - blog
+  - http
+  - web
+  - application
+  - php
+home: http://www.wordpress.com/
+sources:
+  - https://github.com/bitnami/bitnami-docker-wordpress
+maintainers:
+  - email: containers@bitnami.com
+    name: Bitnami
+```
+
+| Field | Holds |
+|---|---|
+| `apiVersion` | The Chart API version (`v2` for current Helm 3 charts) |
+| `name` | The chart's name |
+| `version` | The chart's own version |
+| `description` | What the chart does |
+| `keywords` | Tags for discovery |
+| `home` | The project's homepage |
+| `sources` | Links to the source code |
+| `maintainers` | Who maintains it |
+
+A Helm Chart, as a whole, bundles **three parts** together: `Templates`, `values.yaml`, and `Chart.yaml`.
+
+> 📌 A single chart can bundle **everything** needed for a whole application (all its templates + the shared `values.yaml`) — e.g. one `wordpress` chart covering the Deployment, Service, PVC and Secret together.
+
+### Finding Existing Charts: Repositories
+
+You don't have to write every chart yourself — **Artifact Hub** (`artifacthub.io`) is the main community-driven chart **repository**, with thousands of charts contributed by others (e.g. 5,700+ at time of recording — treat that number as illustrative, not current).
+
+| Searching | Command |
+|---|---|
+| **Artifact Hub** (default, no setup needed) | `helm search hub <keyword>` |
+| **Another repo** (e.g. Bitnami) | First add it: `helm repo add bitnami https://charts.bitnami.com/bitnami`, then `helm search repo <keyword>` |
+| List repos you've added | `helm repo list` |
+
+> 📌 `search hub` queries Artifact Hub directly, with no setup. `search repo` only searches repos you've **explicitly added** with `helm repo add` first.
+
+### Installing a Chart: Releases
+
+```bash
+helm install <release-name> <chart-name>
+```
+- Downloads the chart package from the repo, extracts it, and installs it onto the cluster.
+- Each **installation** of a chart is called a **release**, identified by the **release name** you choose.
+- You can install the **same chart multiple times** (different release names) — each release is **completely independent** of the others (its own objects, its own values, upgraded/removed separately).
+
+```mermaid
+flowchart LR
+    C["Chart: wordpress"] -->|"helm install blog wordpress"| R1["Release: blog"]
+    C -->|"helm install my-site wordpress"| R2["Release: my-site"]
+```
+
+### Command Summary
+
+| Command | Purpose |
+|---|---|
+| `helm search hub <keyword>` | Search Artifact Hub for charts |
+| `helm repo add <name> <url>` | Add a chart repository (e.g. Bitnami) |
+| `helm repo list` | List added repositories |
+| `helm search repo <keyword>` | Search within added repositories |
+| `helm install <release-name> <chart-name>` | Install a chart as a new release |
+| `helm list` | List installed releases |
+| `helm uninstall <release-name>` | Remove a release |
+| `helm pull <chart-name> --untar` | **Download only** (no install) — fetches the chart (normally a `.tar` archive) and extracts it with `--untar` so you can inspect/edit it |
+
+### Customizing a Downloaded Chart Before Installing
+
+```bash
+helm pull wordpress --untar
+# edit the extracted folder's values.yaml as needed
+helm install my-release ./wordpress
+```
+- `helm pull ... --untar` downloads **and extracts** the chart into a folder named after the chart.
+- Edit `values.yaml` inside that folder to customize (image version, storage size, password, etc.).
+- Install from the **local folder path** instead of a repo/chart name — this uses your edited values instead of the chart's defaults.
+
+**Useful extra flags on `helm pull`:**
+```bash
+helm pull bitnami/apache --version 10.1.1 --untar --destination /root
+```
+
+| Flag | Purpose |
+|---|---|
+| `--version <chart-version>` | Pull a **specific** chart version instead of the latest (matches a `version` value in that chart's `Chart.yaml`) |
+| `--untar` | Extract the downloaded `.tar` archive instead of leaving it packaged |
+| `--destination <path>` | Extract into a **specific directory** (here, `/root`) instead of the current working directory |
+
+> ⭐ **Exam scope note (from the lecture itself)**: this is everything CKAD requires about Helm. Helm has much more depth (its own full course exists) — hooks, subcharts, template functions, etc. — but is **beyond exam scope**.
 
 ---
