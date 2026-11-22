@@ -64,6 +64,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 59. [Custom Resource Definitions (CRDs)](#59-custom-resource-definitions-crds)
 60. [Developing Custom Controllers](#60-developing-custom-controllers)
 61. [Operators](#61-operators)
+62. [Helm — Why It Exists](#62-helm--why-it-exists)
 
 ---
 
@@ -6784,5 +6785,63 @@ That's it — the operator then manages its application's full lifecycle going f
 | **CRD** ([Section 59](#59-custom-resource-definitions-crds)) | Defines a new custom resource type |
 | **Custom Controller** ([Section 60](#60-developing-custom-controllers)) | Code that watches that resource and acts on it |
 | **Operator** (this section) | **CRD + Controller packaged together**, often with extra operational logic (backup, restore, scaling, upgrades) for managing a specific application's full lifecycle |
+
+---
+
+## 62. Helm — Why It Exists
+
+### The Problem: A Real App Is Many Objects
+Even a modest app (the lecture's example: WordPress) typically needs **several interconnected objects**:
+
+| Object | Purpose |
+|---|---|
+| **Deployment(s)** | The pods to run (e.g. MySQL + the web server) |
+| **PersistentVolume** + **PersistentVolumeClaim** | Storage for the database ([Sections 41](#41-persistent-volumes)/[42](#42-persistent-volume-claims)) |
+| **Service** | Expose the web server ([Section 8](#8-services--nodeport)/[9](#9-services--clusterip)) |
+| **Secret** | Store the admin password ([Section 17](#17-secrets)) |
+| ...and possibly more | Backups, extra config, etc. |
+
+Each object usually means its **own YAML file**, each applied separately with `kubectl apply`. That alone is tedious but manageable. The **real pain** shows up afterward:
+
+- **Customizing**: downloaded YAMLs have defaults you don't want (e.g. a `20Gi` PV when you need `100Gi`) — you have to **hunt through every file** and edit the right one.
+- **Upgrading**: months later, upgrading a component means editing multiple YAMLs again, carefully, to avoid changing the wrong thing in the wrong place.
+- **Deleting**: removing the app means **remembering every object** that belongs to it and deleting them one by one — nothing tracks "these N objects are one app."
+- **One giant YAML file isn't really a fix either**: merging everything into a single file avoids juggling multiple files, but now you're searching through a long, undifferentiated document instead — multiple well-organized files are arguably easier to navigate than one large one.
+
+### The Core Insight: Kubernetes Doesn't Know What an "App" Is
+Kubernetes only ever sees **individual objects** — a Deployment here, a Secret there. It has **no concept** that a given PV, Deployment, Service and Secret are all part of one logical thing called "WordPress." Each object is managed completely independently.
+
+### Helm: A Package Manager for Kubernetes
+**Helm** is built specifically to understand **the app as a whole** — a collection of related Kubernetes objects treated as **one package**.
+
+```mermaid
+flowchart LR
+    subgraph Without Helm
+        Y1[deployment.yaml] & Y2[pv.yaml] & Y3[pvc.yaml] & Y4[service.yaml] & Y5[secret.yaml]
+        Y1 & Y2 & Y3 & Y4 & Y5 --> K1["kubectl apply (x5, individually)"]
+    end
+    subgraph With Helm
+        P["WordPress package<br/>(Helm chart)"] --> H["helm install"]
+        H --> K2["All 5 objects created together"]
+    end
+```
+
+**Analogy**: installing a video game. The game is made of thousands of files (executable, audio, graphics, config) — but you don't download each one manually. An **installer** handles placing every file correctly with one action. Helm does the equivalent for a Kubernetes app's YAML/objects.
+
+### What You Get With Helm
+
+| Capability | What it replaces |
+|---|---|
+| **Install** the whole app with **one command** | Running `kubectl apply` on every individual YAML file |
+| **Customize settings in one place** — a single `values.yaml` file (e.g. PV size, site name, admin password, DB engine settings) | Editing the relevant field inside many separate YAML files |
+| **Upgrade** the app with **one command** | Manually figuring out which objects need to change and updating each carefully |
+| **Roll back** to a previous **revision** | No equivalent without Helm — you'd have to manually revert each object |
+| **Uninstall** with **one command** | Manually remembering and deleting every object that belonged to the app |
+
+### Helm's Two Roles
+- **Package manager**: install/uninstall an app as a single unit (like an installer/uninstaller wizard).
+- **Release manager**: track **revisions** of an installed app, so you can **upgrade** or **roll back** as a whole — conceptually similar to how a Deployment tracks revisions for rolling updates/rollbacks ([Section 33](#33-deployments--updates-rollouts--rollbacks)), but at the level of an **entire multi-object app**, not just one Deployment.
+
+> 📌 **Core idea to take away**: Helm lets you manage a Kubernetes app **as an app**, not as a loose pile of individual objects you have to track and edit by hand. The next lectures cover the actual Helm commands and chart structure in detail.
 
 ---
