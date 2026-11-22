@@ -65,6 +65,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 60. [Developing Custom Controllers](#60-developing-custom-controllers)
 61. [Operators](#61-operators)
 62. [Helm — Why It Exists](#62-helm--why-it-exists)
+63. [Installing Helm](#63-installing-helm)
 
 ---
 
@@ -6843,5 +6844,69 @@ flowchart LR
 - **Release manager**: track **revisions** of an installed app, so you can **upgrade** or **roll back** as a whole — conceptually similar to how a Deployment tracks revisions for rolling updates/rollbacks ([Section 33](#33-deployments--updates-rollouts--rollbacks)), but at the level of an **entire multi-object app**, not just one Deployment.
 
 > 📌 **Core idea to take away**: Helm lets you manage a Kubernetes app **as an app**, not as a loose pile of individual objects you have to track and edit by hand. The next lectures cover the actual Helm commands and chart structure in detail.
+
+---
+
+## 63. Installing Helm
+
+Builds on [Section 62](#62-helm--why-it-exists).
+
+### Prerequisite
+A **working Kubernetes cluster**, with `kubectl` **installed and configured** on your machine (i.e. a working **KubeConfig** — [Section 50](#50-kubeconfig)) pointed at that cluster. Helm doesn't replace `kubectl`'s connection setup — it **uses** the same credentials/config already in place.
+
+### Installing on Linux
+
+| Package system | Command |
+|---|---|
+| **Snap** | `sudo snap install helm --classic` |
+| **apt** (Debian/Ubuntu) | Add Helm's signing key and apt source first (see below), then `sudo apt-get install helm` |
+| **pkg** (FreeBSD) | `pkg install helm` |
+
+**apt-based install** (Debian/Ubuntu) — current official method, from Helm's own documentation:
+```bash
+HELM_BUILDKITE_APT_KEY_ID="DDF78C3E6EBB2D2CC223C95C62BA89D07698DBC6"
+
+sudo apt-get install curl gpg --yes
+curl -fsSL https://packages.buildkite.com/helm-linux/helm-debian/gpgkey > "${TMPDIR:-/tmp}/helm.asc"
+
+# Ensure that the key ID matches to prevent a repository compromise from establishing an attacker controlled key
+if [ "$(gpg --import --import-options=show-only --with-colons "${TMPDIR:-/tmp}/helm.asc" \
+        | awk -F: '$1 == "fpr" {print $10}' | head -n 1)" != "${HELM_BUILDKITE_APT_KEY_ID}" ]; then
+    echo "ERROR: Unexpected Helm APT key ID: potential key compromise"
+    exit 1
+fi
+
+# Remove configuration left by earlier versions of these instructions
+sudo rm -f /etc/apt/sources.list.d/helm-stable-debian.list /usr/share/keyrings/helm.gpg
+
+sudo install -m 0644 -Dt /etc/apt/keyrings/ "${TMPDIR:-/tmp}/helm.asc"
+sudo tee /etc/apt/sources.list.d/helm-stable-debian.sources > /dev/null <<EOF
+Types: deb
+URIs: https://packages.buildkite.com/helm-linux/helm-debian/any/
+Suites: any
+Components: main
+Signed-By: /etc/apt/keyrings/helm.asc
+EOF
+
+sudo apt-get update
+sudo apt-get install helm
+```
+
+| Step | Purpose |
+|---|---|
+| `HELM_BUILDKITE_APT_KEY_ID="..."` | Helm's **published key fingerprint**, set as a named variable so it's easy to see what's being checked against and to update later if the key ever rotates |
+| `curl ... > helm.asc` | Downloads Helm's **signing key** |
+| The `if [ ... ]` fingerprint check | Confirms the downloaded key's fingerprint matches `HELM_BUILDKITE_APT_KEY_ID` — guards against a compromised or spoofed repo |
+| `rm -f .../helm-stable-debian.list .../helm.gpg` | Cleans up leftover config from the **old, deprecated** apt-key-based instructions, if present |
+| `install -m 0644 -Dt /etc/apt/keyrings/` | Places the verified key in apt's **keyrings** directory |
+| `tee .../helm-stable-debian.sources` | Adds Helm's **package repository** as a new apt source, in the modern `.sources` format, referencing the keyring for signature verification (`Signed-By`) |
+| `apt-get update` | Refreshes apt's package index to pick up the new source |
+| `apt-get install helm` | Installs Helm itself |
+
+> 📌 **Source**: [helm.sh/docs/intro/install/#from-apt-debianubuntu](https://helm.sh/docs/intro/install/#from-apt-debianubuntu) — check this page directly for the latest version of these instructions, since package repos and key IDs can change over time.
+
+> 📌 **Why `--classic` with snap**: by default, snap packages run in a **strict, isolated sandbox** with limited access to the host filesystem. `--classic` installs Helm with **relaxed confinement**, giving it normal access to the host — specifically so it can **read your KubeConfig** (`~/.kube/config`) to know how to reach your cluster. Without it, Helm might not be able to see that file.
+
+- Helm is also installable on **Windows** and **macOS** — always check the **official Helm documentation** for the current install instructions for your OS, as package manager commands/sources can change over time.
 
 ---
