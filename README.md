@@ -67,6 +67,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 62. [Helm — Why It Exists](#62-helm--why-it-exists)
 63. [Installing Helm](#63-installing-helm)
 64. [Helm Concepts & Commands](#64-helm-concepts--commands)
+65. [Kustomize — Why It Exists](#65-kustomize--why-it-exists)
 
 ---
 
@@ -7049,5 +7050,101 @@ helm pull bitnami/apache --version 10.1.1 --untar --destination /root
 | `--destination <path>` | Extract into a **specific directory** (here, `/root`) instead of the current working directory |
 
 > ⭐ **Exam scope note (from the lecture itself)**: this is everything CKAD requires about Helm. Helm has much more depth (its own full course exists) — hooks, subcharts, template functions, etc. — but is **beyond exam scope**.
+
+---
+
+## 65. Kustomize — Why It Exists
+
+### The Problem
+Say an `nginx-deployment.yaml` needs **different replica counts per environment**: `dev` (1 — low-power local machine), `staging` (2–3), `production` (5–10). Right now, there's just **one** deployment file, so it can't vary by environment.
+
+**A simple, workable-but-flawed fix**: create **three separate directories** (`dev/`, `staging/`, `production/`), **duplicate** the full config into each, and just change `replicas` in each copy:
+```bash
+kubectl apply -f dev/          # 1 replica
+kubectl apply -f staging/      # 2 replicas
+```
+
+This **works**, but doesn't **scale**:
+- Add a new resource (e.g. a `service.yaml`)? You must remember to **copy it into all three directories**.
+- Change something shared? You must **edit it identically in every directory**.
+- With more environments and more resources, it becomes **increasingly likely** someone forgets to update one copy, causing **configuration drift** between environments.
+
+> 📌 This is exactly the kind of duplication problem Helm solves with templates+values ([Section 64](#64-helm-concepts--commands)) — **Kustomize solves the same underlying problem with a different approach**: no templating language, just plain YAML.
+
+### The Goal
+Reuse the same Kubernetes config across environments, and **only specify what's different** per environment — **without duplicating** the whole config.
+
+### Kustomize's Two Key Concepts: Base and Overlays
+
+| Term | Meaning |
+|---|---|
+| **Base** | The config that's **identical across all environments** — the shared resources and **default values** |
+| **Overlay** | **Per-environment** customizations — only the fields that differ from the base, for one specific environment |
+
+**Base** (`base/deployment.yaml`) — the default, e.g. `replicas: 1`:
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+        - name: nginx
+          image: nginx
+```
+
+**Overlays** — only the fields that need to change, per environment:
+- `dev`: **no overlay needed at all** — the base's default (`replicas: 1`) is already correct.
+- `staging`: overlay changes `replicas` to `2`.
+- `production`: overlay changes `replicas` to `5`.
+
+### Folder Structure
+
+```
+├── base/
+│   ├── deployment.yaml
+│   └── kustomization.yaml
+└── overlays/
+    ├── dev/
+    │   └── kustomization.yaml
+    ├── staging/
+    │   ├── kustomization.yaml
+    │   └── replica-patch.yaml
+    └── production/
+        ├── kustomization.yaml
+        └── replica-patch.yaml
+```
+
+- **`base/`** — shared resources and configs, common across all environments.
+- **`overlays/<environment>/`** — one folder **per environment**, containing only:
+  - the **values to override** from the base, and
+  - any **brand-new resources** that should exist **only** in that one environment.
+
+```mermaid
+flowchart LR
+    B["Base config<br/>(shared defaults)"] --> K["Kustomize"]
+    O["Overlay<br/>(per-environment changes)"] --> K
+    K --> M["Final Kubernetes manifest<br/>→ kubectl apply"]
+```
+
+### Kustomize vs Helm — Key Differences
+
+| | Helm ([Section 64](#64-helm-concepts--commands)) | Kustomize |
+|---|---|---|
+| Customization mechanism | **Templating language** (`{{ }}` placeholders + `values.yaml`) | **Patching** plain YAML with overlays — no templating syntax at all |
+| Learning curve | Must learn the templating language | Just plain, standard YAML throughout |
+| Readability | Complex charts can get hard to read because of the templating | Everything stays **plain YAML** — readable, and can be validated/processed as ordinary YAML with no special tooling |
+| Installation | Separate tool to install ([Section 63](#63-installing-helm)) | **Built into `kubectl`** already (`kubectl kustomize` / `kubectl apply -k`) |
+
+> 📌 Kustomize ships bundled with `kubectl`, so **no separate install is required** to get started. However, the bundled version isn't always the **latest** release — installing Kustomize **separately** may still be worthwhile for newer features (covered in later lectures).
 
 ---
