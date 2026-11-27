@@ -69,6 +69,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 64. [Helm Concepts & Commands](#64-helm-concepts--commands)
 65. [Kustomize — Why It Exists](#65-kustomize--why-it-exists)
 66. [Installing Kustomize](#66-installing-kustomize)
+67. [The kustomization.yaml File](#67-the-kustomizationyaml-file)
 
 ---
 
@@ -7219,5 +7220,67 @@ kustomize version
 - If the problem persists after that, **re-run the install script**.
 
 > 📌 Same note as [Section 65](#65-kustomize--why-it-exists): Kustomize also comes **bundled inside `kubectl`** already (no install needed to use `kubectl apply -k`), but installing it **standalone** (as above) gets you a more current version and the full `kustomize` CLI with extra commands beyond what's bundled.
+
+---
+
+## 67. The kustomization.yaml File
+
+Builds on [Section 65](#65-kustomize--why-it-exists)/[66](#66-installing-kustomize).
+
+### The Core File Kustomize Looks For
+
+Say you have a directory `k8s/` with plain Kubernetes manifests:
+```
+k8s/
+├── nginx-deployment.yaml
+└── nginx-service.yaml
+```
+You point Kustomize at this **folder**, but Kustomize **never reads these files directly**. Instead, it looks for one specific, must-be-named-exactly-this file: **`kustomization.yaml`**, which **you create yourself**.
+
+### Two Things a kustomization.yaml Contains
+
+```yaml
+resources:
+  - nginx-deployment.yaml
+  - nginx-service.yaml
+
+commonLabels:
+  company: KodeKloud
+```
+
+| Section | Purpose |
+|---|---|
+| `resources` | A **list** of every Kubernetes manifest file that Kustomize should manage |
+| (everything else) | The **customizations/transformations** to apply to those resources |
+
+- `resources` is required — it's how Kustomize knows **which files** to even look at.
+- The example here uses `commonLabels` — a simple transformation that **adds a label** (`company: KodeKloud`) to **every** resource it manages. This is just **one example** of many possible transformations (patches, name prefixes/suffixes, namespace injection, image overrides, etc.) — the lecture keeps it simple on purpose.
+
+### Running Kustomize: `kustomize build`
+
+```bash
+kustomize build k8s/
+```
+- Point it at the **folder containing `kustomization.yaml`** (here, `k8s/`), not at individual files.
+- It finds `kustomization.yaml`, reads the `resources` list, **imports** those manifests, applies every listed **transformation**, and **prints the final, combined configuration** to the terminal.
+- In this example, the output shows **both** the Service and Deployment, each now carrying the extra `company: KodeKloud` label that wasn't in the original files.
+
+```mermaid
+flowchart LR
+    R["resources:<br/>nginx-deployment.yaml<br/>nginx-service.yaml"] --> B["kustomize build"]
+    T["commonLabels:<br/>company: KodeKloud"] --> B
+    B --> O["Final merged YAML<br/>(printed to terminal)"]
+```
+
+### ⚠️ Important: `kustomize build` Does NOT Deploy Anything
+
+`kustomize build` only **prints** the resulting YAML — it does **not** create/update any objects on the cluster. To actually deploy, **pipe the output into `kubectl apply`**:
+```bash
+kustomize build k8s/ | kubectl apply -f -
+```
+- `-f -` tells `kubectl apply` to read the manifest from **standard input** rather than a file.
+- This two-step separation (build → apply) is deliberate: it lets you **inspect** the final config before applying it.
+
+> 📌 This mirrors `--dry-run=client -o yaml` from [Section 10](#10-imperative-commands-exam-tip) in spirit — see the full result **before** committing it to the cluster.
 
 ---
