@@ -7283,4 +7283,33 @@ kustomize build k8s/ | kubectl apply -f -
 
 > 📌 This mirrors `--dry-run=client -o yaml` from [Section 10](#10-imperative-commands-exam-tip) in spirit — see the full result **before** committing it to the cluster.
 
+### How the Pipe Actually Works (and the Native `-k` Shortcut)
+
+```bash
+kustomize build k8s | kubectl apply -f -
+```
+- This uses the standard Linux/shell **pipe (`|`)** — nothing Kubernetes-specific. A pipe takes the **output** of the command on its left and feeds it in as the **input** of the command on its right.
+- Here: `kustomize build k8s` produces the final merged YAML → that output is **piped directly into** `kubectl apply -f -`, which reads it from **standard input** (`-f -`) instead of a file, and creates the resources.
+
+**`kubectl` has this built in natively**, via the **`-k`** flag — no separate `kustomize` command or pipe needed at all:
+```bash
+kubectl apply -k k8s/
+```
+- `-k` points at the **directory containing `kustomization.yaml`** (same as `kustomize build` does), and `kubectl` runs Kustomize **internally** before applying — equivalent to the piped version above, just shorter.
+
+### Deleting Resources Managed by Kustomize
+
+Deleting mirrors creating almost exactly — just swap `apply`/`create` for `delete`:
+
+```bash
+# via pipe
+kustomize build k8s | kubectl delete -f -
+
+# native kubectl shortcut
+kubectl delete -k k8s/
+```
+- Both remove the same resources that `resources:` in `kustomization.yaml` describes (here, the nginx Deployment and Service).
+
+> 📌 Think of `-k` as meaning **"Kustomize"** — it works the same way across `apply`, `delete`, and other `kubectl` subcommands that accept `-f`/`-k`.
+
 ---
