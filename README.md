@@ -7136,14 +7136,57 @@ flowchart LR
     K --> M["Final Kubernetes manifest<br/>→ kubectl apply"]
 ```
 
+### Kustomize vs Helm — How Helm Solves the Same Problem
+
+Helm solves the exact same per-environment customization problem ([Section 64](#64-helm-concepts--commands)), but with a fundamentally different mechanism: **Go templating syntax**, instead of plain-YAML overlays.
+
+**A Helm template** — same deployment, but values become `{{ }}` variables:
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+spec:
+  replicas: {{ .Values.replicaCount }}
+  template:
+    spec:
+      containers:
+        - name: nginx
+          image: "nginx:{{ .Values.image.tag }}"
+```
+
+**The values are supplied from a `values.yaml`** (one per environment):
+```yaml
+# values.dev.yaml
+replicaCount: 1
+image:
+  tag: "2.4.4"
+```
+At deploy time, Helm inserts `1` for `replicaCount` and `2.4.4` for `image.tag` into the template — same end result as Kustomize's overlay patching, just reached differently.
+
+**Typical Helm project layout** for per-environment values:
+```
+├── templates/
+│   └── deployment.yaml        # has {{ .Values.* }} placeholders
+└── environments/
+    ├── values.dev.yaml
+    ├── values.staging.yaml
+    └── values.prod.yaml
+```
+At install time, you specify **which** values file to use for that environment (e.g. `helm install -f environments/values.prod.yaml`), and Helm inserts those values into the shared templates.
+
 ### Kustomize vs Helm — Key Differences
 
 | | Helm ([Section 64](#64-helm-concepts--commands)) | Kustomize |
 |---|---|---|
-| Customization mechanism | **Templating language** (`{{ }}` placeholders + `values.yaml`) | **Patching** plain YAML with overlays — no templating syntax at all |
+| Customization mechanism | **Go templating language** (`{{ }}` placeholders + per-environment `values.yaml` files) | **Patching** plain YAML with overlays — no templating syntax at all |
 | Learning curve | Must learn the templating language | Just plain, standard YAML throughout |
-| Readability | Complex charts can get hard to read because of the templating | Everything stays **plain YAML** — readable, and can be validated/processed as ordinary YAML with no special tooling |
+| Readability | Complex charts can get hard to read because of the templating — a templated file is **not valid YAML** on its own (the `{{ }}` syntax breaks YAML parsing until Helm renders it), making it harder to tell what a chart actually does or which values can be changed | Everything stays **plain YAML** — readable, and can be validated/processed as ordinary YAML with no special tooling |
+| Scope | A **full package manager** for Kubernetes apps (like `apt`/`yum`, but for Kubernetes) — install/upgrade/rollback/uninstall as a unit ([Section 62](#62-helm--why-it-exists)) | Focused specifically on **config customization** — no install/release/rollback concept of its own |
+| Extra features | Supports **conditionals, loops, functions, and hooks** — genuinely more powerful for complex logic | No equivalent features — deliberately kept simple |
 | Installation | Separate tool to install ([Section 63](#63-installing-helm)) | **Built into `kubectl`** already (`kubectl kustomize` / `kubectl apply -k`) |
+
+**The trade-off in one line**: Kustomize is **simpler and easier to read**, but has fewer features; Helm is **more powerful** (templating logic, full package management), at the cost of **more complexity** and templates that are harder to read at a glance. Which to use depends on the project's actual needs — there's no universally "correct" choice between them.
 
 > 📌 Kustomize ships bundled with `kubectl`, so **no separate install is required** to get started. However, the bundled version isn't always the **latest** release — installing Kustomize **separately** may still be worthwhile for newer features (covered in later lectures).
 
