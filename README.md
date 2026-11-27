@@ -70,6 +70,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 65. [Kustomize — Why It Exists](#65-kustomize--why-it-exists)
 66. [Installing Kustomize](#66-installing-kustomize)
 67. [The kustomization.yaml File](#67-the-kustomizationyaml-file)
+68. [Kustomize with Multiple Directories](#68-kustomize-with-multiple-directories)
 
 ---
 
@@ -7316,5 +7317,109 @@ kubectl delete -k k8s/
 - Both remove the same resources that `resources:` in `kustomization.yaml` describes (here, the nginx Deployment and Service).
 
 > 📌 Think of `-k` as meaning **"Kustomize"** — it works the same way across `apply`, `delete`, and other `kubectl` subcommands that accept `-f`/`-k`.
+
+---
+
+## 68. Kustomize with Multiple Directories
+
+Builds on [Section 67](#67-the-kustomizationyaml-file).
+
+### The Problem: Configs Split Across Subdirectories
+
+Starting point — a flat `k8s/` directory:
+```
+k8s/
+├── api-deployment.yaml
+├── api-service.yaml
+├── database-deployment.yaml
+└── database-service.yaml
+```
+A plain `kubectl apply -f k8s/` handles this fine — no Kustomize needed at all.
+
+As the number of files grows (20, 30, 50+), it gets reorganized into subdirectories:
+```
+k8s/
+├── api/
+│   ├── api-deployment.yaml
+│   └── api-service.yaml
+└── database/
+    ├── database-deployment.yaml
+    └── database-service.yaml
+```
+Now a single `kubectl apply -f k8s/` **no longer works** — you'd have to `cd`/target **each subdirectory separately**:
+```bash
+kubectl apply -f k8s/api/
+kubectl apply -f k8s/database/
+```
+This gets painful fast: every change, every apply, every delete, and every CI/CD pipeline step now has to loop over **every subdirectory individually**.
+
+### The Fix: One Root kustomization.yaml Referencing Subdirectory Files
+
+Create a single `kustomization.yaml` at the **root** of `k8s/`, listing the **relative paths** to every file across every subdirectory:
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - api/api-deployment.yaml
+  - api/api-service.yaml
+  - database/database-deployment.yaml
+  - database/database-service.yaml
+```
+Now **one command**, run from the root, handles everything:
+```bash
+kustomize build k8s | kubectl apply -f -
+# or, natively:
+kubectl apply -k k8s
+```
+No more going into each subdirectory individually — Kustomize reads the root `kustomization.yaml`, follows each relative path, and applies everything in one pass.
+
+### Scaling Further: Nested kustomization.yaml Files per Subdirectory
+
+As more subdirectories get added (e.g. `cache/`, `kafka/`, alongside `api/` and `database/`), listing **every single file** from **every directory** in one root `kustomization.yaml` becomes long and cluttered — potentially hundreds of entries.
+
+**Better structure**: give **each subdirectory its own `kustomization.yaml`**, listing just that directory's own files:
+```yaml
+# k8s/database/kustomization.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - database-deployment.yaml
+  - database-service.yaml
+```
+(Same pattern repeated in `k8s/api/kustomization.yaml`, `k8s/cache/kustomization.yaml`, `k8s/kafka/kustomization.yaml` — each only listing its own files.)
+
+**Then the root `kustomization.yaml` just references the directories themselves**, not individual files:
+```yaml
+# k8s/kustomization.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - api/
+  - database/
+  - cache/
+  - kafka/
+```
+When a `resources` entry is a **directory**, Kustomize looks **inside it for that directory's own `kustomization.yaml`**, and imports whatever that one lists. This keeps the **root** file short and clean, no matter how many files live inside each subdirectory.
+
+```mermaid
+flowchart TB
+    Root["k8s/kustomization.yaml<br/>resources: [api, database, cache, kafka]"]
+    Root --> API["k8s/api/kustomization.yaml<br/>resources: [api-deployment.yaml, api-service.yaml]"]
+    Root --> DB["k8s/database/kustomization.yaml<br/>resources: [database-deployment.yaml, database-service.yaml]"]
+    Root --> Cache["k8s/cache/kustomization.yaml"]
+    Root --> Kafka["k8s/kafka/kustomization.yaml"]
+```
+
+**Applying still stays a single command**, run from the root — regardless of how many nested `kustomization.yaml` files exist underneath:
+```bash
+kustomize build k8s | kubectl apply -f -
+# or:
+kubectl apply -k k8s
+```
+
+> 📌 Both structures (one flat root `kustomization.yaml` listing every file, vs. nested per-directory `kustomization.yaml` files) are **valid** — the nested approach is simply the **more maintainable** one as the number of subdirectories/files grows, since each directory's config stays self-contained and the root file never needs to change when files are added *within* an existing subdirectory.
 
 ---
