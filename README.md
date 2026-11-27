@@ -68,6 +68,7 @@ Condensed concepts from a Udemy CKAD course, for quick review before the exam.
 63. [Installing Helm](#63-installing-helm)
 64. [Helm Concepts & Commands](#64-helm-concepts--commands)
 65. [Kustomize — Why It Exists](#65-kustomize--why-it-exists)
+66. [Installing Kustomize](#66-installing-kustomize)
 
 ---
 
@@ -7189,5 +7190,34 @@ At install time, you specify **which** values file to use for that environment (
 **The trade-off in one line**: Kustomize is **simpler and easier to read**, but has fewer features; Helm is **more powerful** (templating logic, full package management), at the cost of **more complexity** and templates that are harder to read at a glance. Which to use depends on the project's actual needs — there's no universally "correct" choice between them.
 
 > 📌 Kustomize ships bundled with `kubectl`, so **no separate install is required** to get started. However, the bundled version isn't always the **latest** release — installing Kustomize **separately** may still be worthwhile for newer features (covered in later lectures).
+
+---
+
+## 66. Installing Kustomize
+
+Builds on [Section 65](#65-kustomize--why-it-exists).
+
+### Prerequisite
+Same as Helm ([Section 63](#63-installing-helm)): a **working Kubernetes cluster**, with **`kubectl` installed and configured** on your machine (KubeConfig — [Section 50](#50-kubeconfig)) to connect to it.
+
+### Installing (Linux, Windows, macOS)
+
+Kustomize provides an **install script** that auto-detects your OS and installs the right version — no need to pick a package manager or run multiple commands yourself:
+```bash
+curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+```
+- Downloads and runs the script in one step; it handles the entire install.
+
+### Verifying the Install
+```bash
+kustomize version
+```
+- If this doesn't show expected output, the most common causes are:
+  1. The install had an issue, or
+  2. The current terminal session's **environment variables/PATH** weren't refreshed after install.
+- **First thing to try**: close the terminal and open a **new session** — this picks up the updated `PATH` and usually resolves it.
+- If the problem persists after that, **re-run the install script**.
+
+> 📌 Same note as [Section 65](#65-kustomize--why-it-exists): Kustomize also comes **bundled inside `kubectl`** already (no install needed to use `kubectl apply -k`), but installing it **standalone** (as above) gets you a more current version and the full `kustomize` CLI with extra commands beyond what's bundled.
 
 ---
