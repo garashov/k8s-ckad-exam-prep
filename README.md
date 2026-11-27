@@ -7240,6 +7240,9 @@ You point Kustomize at this **folder**, but Kustomize **never reads these files 
 ### Two Things a kustomization.yaml Contains
 
 ```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
 resources:
   - nginx-deployment.yaml
   - nginx-service.yaml
@@ -7247,6 +7250,8 @@ resources:
 commonLabels:
   company: KodeKloud
 ```
+
+> 📌 `apiVersion` and `kind`, like on any other Kubernetes-style manifest, are **technically optional** here — Kustomize falls back to default values if they're omitted. Still, it's **recommended to set them explicitly**, as a safeguard against any breaking changes to those defaults in future Kustomize versions.
 
 | Section | Purpose |
 |---|---|
